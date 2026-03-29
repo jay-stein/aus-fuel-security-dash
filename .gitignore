@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Data files (download separately — see README)
+data/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Claude Code
+.claude/
