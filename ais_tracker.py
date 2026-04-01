@@ -84,6 +84,7 @@ ROUTE_WAYPOINTS = {
         (-2.0, 117.0),   # Makassar Strait
         (-5.0, 132.0),   # Banda Sea
         (-10.5, 142.0),  # Torres Strait
+        (-16.9, 146.0),  # Off Cairns (outside GBR)
         (-23.8, 152.0),  # Off Gladstone
         (-33.8, 152.0),  # Off Sydney
         (-37.5, 150.0),  # Off Eden
@@ -131,6 +132,7 @@ ROUTE_WAYPOINTS = {
         (-11.0, 132.0),  # North of Darwin
         (-10.5, 136.0),  # Gulf of Carpentaria approach
         (-10.5, 142.0),  # Torres Strait
+        (-16.9, 146.0),  # Off Cairns (outside GBR)
         (-23.8, 152.0),  # Off Gladstone
         (-27.4, 154.0),  # Off Brisbane
         (-33.8, 152.0),  # Off Sydney
@@ -165,6 +167,7 @@ ROUTE_WAYPOINTS = {
         (5.0, 125.0),    # South Philippines
         (-5.0, 132.0),   # Banda Sea
         (-10.5, 142.0),  # Torres Strait
+        (-16.9, 146.0),  # Off Cairns (outside GBR)
         (-23.8, 152.0),  # Off Gladstone
         (-33.8, 152.0),  # Off Sydney
         (-37.5, 150.0),  # Off Eden
@@ -276,6 +279,27 @@ ROUTE_WAYPOINTS = {
         (-32.0, 115.7),  # Off Fremantle
     ],
 }
+
+
+def _densify_route(
+    waypoints: list[tuple[float, float]],
+    max_step_deg: float = 1.0,
+) -> list[tuple[float, float]]:
+    """Insert linearly-interpolated points so no segment exceeds max_step_deg.
+    Prevents Plotly's chord renderer from visually crossing land on long segments.
+    """
+    if len(waypoints) < 2:
+        return list(waypoints)
+    result: list[tuple[float, float]] = [waypoints[0]]
+    for (lat1, lon1), (lat2, lon2) in zip(waypoints[:-1], waypoints[1:]):
+        steps = max(int(abs(lat2 - lat1) / max_step_deg),
+                    int(abs(lon2 - lon1) / max_step_deg), 1)
+        for k in range(1, steps + 1):
+            frac = k / steps
+            result.append((lat1 + frac * (lat2 - lat1),
+                            lon1 + frac * (lon2 - lon1)))
+    return result
+
 
 # Destination port groupings for route selection
 _WEST_AU_PORTS = {"kwinana", "fremantle", "bunbury", "geraldton", "dampier",
@@ -552,7 +576,7 @@ def get_route_waypoints(vessel_lat: float, vessel_lon: float,
     for wp in waypoints:
         path.append(wp)
     path.append((port_lat, port_lon))
-    return path
+    return _densify_route(path)
 
 
 def get_port_color(port_name: str) -> str:
