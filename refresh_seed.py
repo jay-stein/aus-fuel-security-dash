@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 from data_loader import load_brent_crude, load_fuel_futures, load_mso_weekly, load_tgp_data
+from port_scraper import scrape_all_ports
 
 Path("seed").mkdir(exist_ok=True)
 
@@ -13,6 +14,7 @@ SOURCES = [
     ("Brent crude (FRED)",   load_brent_crude,   "data/brent_prices.json", "seed/brent_prices.json"),
     ("Fuel futures (Yahoo)", load_fuel_futures,  "data/futures.json",      "seed/futures.json"),
     ("Terminal gate prices", load_tgp_data,      "data/aip_tgp.json",      "seed/aip_tgp.json"),
+    ("Port schedules",       scrape_all_ports,   "data/port_schedule.json","seed/port_schedule.json"),
 ]
 
 for label, fn, cache, seed in SOURCES:

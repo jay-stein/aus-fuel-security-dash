@@ -1206,6 +1206,7 @@ def _normalise_rows(raw_rows: list[dict]) -> list[dict]:
 
 
 _PORT_CACHE = Path("data/port_schedule.json")
+_PORT_SEED = Path("seed/port_schedule.json")
 _PORT_CACHE_MAX_AGE = timedelta(hours=3)
 
 
@@ -1274,12 +1275,13 @@ def scrape_all_ports(tankers_only: bool = False) -> pl.DataFrame:
         return df
 
     except Exception:
-        if _PORT_CACHE.exists():
-            try:
-                cached = json.loads(_PORT_CACHE.read_text(encoding="utf-8"))
-                return _df_from_cache(cached["data"], tankers_only)
-            except Exception:
-                pass
+        for src in (_PORT_CACHE, _PORT_SEED):
+            if src.exists():
+                try:
+                    cached = json.loads(src.read_text(encoding="utf-8"))
+                    return _df_from_cache(cached["data"], tankers_only)
+                except Exception:
+                    pass
         return _empty_df()
 
 
