@@ -405,10 +405,11 @@ def load_mso_weekly() -> pl.DataFrame:
         return df.sort("week_ending")
 
     except Exception:
-        # Fall back to cache if available (even if stale)
-        if _MSO_CACHE.exists():
-            cache = json.loads(_MSO_CACHE.read_text())
-            return _cast_mso_types(pl.DataFrame(cache["data"])).sort("week_ending")
+        # Fall back to stale runtime cache, then committed seed snapshot
+        for src in (_MSO_CACHE, _MSO_SEED):
+            if src.exists():
+                cache = json.loads(src.read_text())
+                return _cast_mso_types(pl.DataFrame(cache["data"])).sort("week_ending")
         raise
 
 
@@ -419,6 +420,20 @@ _FUTURES_CACHE = Path("data/futures.json")
 _TGP_CACHE = Path("data/aip_tgp.json")
 _PRICE_CACHE_MAX_AGE = timedelta(hours=6)
 _TGP_CACHE_MAX_AGE = timedelta(hours=24)
+
+# Seed snapshots committed to the repo — used as last-resort fallback when
+# live fetch fails and no runtime cache exists yet (e.g. fresh cloud deploy).
+_MSO_SEED = Path("seed/mso_weekly.json")
+_BRENT_SEED = Path("seed/brent_prices.json")
+_FUTURES_SEED = Path("seed/futures.json")
+_TGP_SEED = Path("seed/aip_tgp.json")
+
+
+def _load_seed(path: Path) -> dict:
+    """Read a seed JSON file; raise FileNotFoundError if absent."""
+    if not path.exists():
+        raise FileNotFoundError(f"Seed file not found: {path}")
+    return json.loads(path.read_text())
 
 
 def _disk_cache_fresh(path: Path, max_age: timedelta) -> bool:
@@ -474,10 +489,11 @@ def load_brent_crude(days: int = 180) -> pl.DataFrame:
         })
         return df
     except Exception:
-        if _BRENT_CACHE.exists():
-            cached = json.loads(_BRENT_CACHE.read_text())
-            df = pl.DataFrame(cached["data"])
-            return df.with_columns(pl.col("date").str.to_date("%Y-%m-%d"))
+        for src in (_BRENT_CACHE, _BRENT_SEED):
+            if src.exists():
+                cached = json.loads(src.read_text())
+                df = pl.DataFrame(cached["data"])
+                return df.with_columns(pl.col("date").str.to_date("%Y-%m-%d"))
         raise
 
 
@@ -521,10 +537,11 @@ def load_fuel_futures(days: int = 180) -> pl.DataFrame:
         })
         return df
     except Exception:
-        if _FUTURES_CACHE.exists():
-            cached = json.loads(_FUTURES_CACHE.read_text())
-            df = pl.DataFrame(cached["data"])
-            return df.with_columns(pl.col("date").str.to_date("%Y-%m-%d"))
+        for src in (_FUTURES_CACHE, _FUTURES_SEED):
+            if src.exists():
+                cached = json.loads(src.read_text())
+                df = pl.DataFrame(cached["data"])
+                return df.with_columns(pl.col("date").str.to_date("%Y-%m-%d"))
         raise
 
 
@@ -588,7 +605,8 @@ def load_tgp_data(days: int = 180) -> tuple[pl.DataFrame, pl.DataFrame]:
         })
         return results[0], results[1]
     except Exception:
-        if _TGP_CACHE.exists():
-            cached = json.loads(_TGP_CACHE.read_text())
-            return _df_from_cache(cached["petrol"]), _df_from_cache(cached["diesel"])
+        for src in (_TGP_CACHE, _TGP_SEED):
+            if src.exists():
+                cached = json.loads(src.read_text())
+                return _df_from_cache(cached["petrol"]), _df_from_cache(cached["diesel"])
         raise
