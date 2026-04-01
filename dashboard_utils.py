@@ -10,6 +10,10 @@ BRENT_AMBER = 100.0        # USD/bbl — elevated price
 BRENT_RED = 120.0          # USD/bbl — crisis price
 CONCENTRATION_ALERT = 0.40 # Flag when single country > 40% of imports
 
+# MSO surplus thresholds (higher is better — % above minimum stockholding obligation)
+MSO_SURPLUS_GREEN = 0.50   # ≥50% surplus above MSO requirement
+MSO_SURPLUS_AMBER = 0.10   # ≥10% surplus
+
 # ─── RAG (Red/Amber/Green) Helpers ─────────────────────────
 
 RAG_COLORS = {

@@ -1205,6 +1205,10 @@ def _normalise_rows(raw_rows: list[dict]) -> list[dict]:
     return normalised
 
 
+_PORT_CACHE = Path("data/port_schedule.json")
+_PORT_CACHE_MAX_AGE = timedelta(hours=3)
+
+
 def scrape_all_ports(tankers_only: bool = False) -> pl.DataFrame:
     """Scrape vessel movements from all available Australian ports.
 
@@ -1216,34 +1220,67 @@ def scrape_all_ports(tankers_only: bool = False) -> pl.DataFrame:
     - SA: All ports via Flinders Ports (PortControl API)
     - NT: Darwin (PortControl API)
     - TAS: All ports via TasPorts (JSON API)
+
+    Caches to data/port_schedule.json (3 h TTL); falls back to disk on failure.
     """
-    all_raw = []
+    def _df_from_cache(records: list[dict], tankers_only: bool) -> pl.DataFrame:
+        if not records:
+            return _empty_df()
+        df = pl.DataFrame(records, infer_schema_length=None)
+        if tankers_only and "is_tanker" in df.columns:
+            df = df.filter(pl.col("is_tanker"))
+        return df
 
-    # NSW
-    all_raw.extend(scrape_nsw_ports())
-    # Geelong (VIC)
-    all_raw.extend(scrape_geelong())
-    # Fremantle (WA)
-    all_raw.extend(scrape_fremantle())
-    # QShips (QLD)
-    all_raw.extend(scrape_qships())
-    # Flinders Ports (SA)
-    all_raw.extend(scrape_flinders())
-    # Darwin (NT)
-    all_raw.extend(scrape_darwin())
-    # TasPorts (TAS)
-    all_raw.extend(scrape_tasports())
+    # Check disk cache (full data, filter after)
+    if _PORT_CACHE.exists():
+        try:
+            cached = json.loads(_PORT_CACHE.read_text(encoding="utf-8"))
+            fetched_at = datetime.fromisoformat(cached["fetched_at"])
+            if datetime.now(tz=timezone.utc) - fetched_at < _PORT_CACHE_MAX_AGE:
+                return _df_from_cache(cached["data"], tankers_only)
+        except Exception:
+            pass
 
-    normalised = _normalise_rows(all_raw)
-    if not normalised:
+    try:
+        all_raw = []
+        all_raw.extend(scrape_nsw_ports())
+        all_raw.extend(scrape_geelong())
+        all_raw.extend(scrape_fremantle())
+        all_raw.extend(scrape_qships())
+        all_raw.extend(scrape_flinders())
+        all_raw.extend(scrape_darwin())
+        all_raw.extend(scrape_tasports())
+
+        normalised = _normalise_rows(all_raw)
+        if not normalised:
+            return _empty_df()
+
+        df = pl.DataFrame(normalised, infer_schema_length=None)
+
+        # Save full (unfiltered) data to disk
+        _PORT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PORT_CACHE.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps({
+                "fetched_at": datetime.now(tz=timezone.utc).isoformat(),
+                "data": df.to_dicts(),
+            }, default=str),
+            encoding="utf-8",
+        )
+        tmp.replace(_PORT_CACHE)
+
+        if tankers_only:
+            df = df.filter(pl.col("is_tanker"))
+        return df
+
+    except Exception:
+        if _PORT_CACHE.exists():
+            try:
+                cached = json.loads(_PORT_CACHE.read_text(encoding="utf-8"))
+                return _df_from_cache(cached["data"], tankers_only)
+            except Exception:
+                pass
         return _empty_df()
-
-    df = pl.DataFrame(normalised, infer_schema_length=None)
-
-    if tankers_only:
-        df = df.filter(pl.col("is_tanker"))
-
-    return df
 
 
 if __name__ == "__main__":

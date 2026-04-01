@@ -11,5 +11,8 @@ data/
 Thumbs.db
 *.swp
 
+# Streamlit secrets
+.streamlit/
+
 # Claude Code
 .claude/

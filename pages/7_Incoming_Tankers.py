@@ -3,6 +3,7 @@
 import streamlit as st
 import polars as pl
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime
 
 from port_scraper import scrape_all_ports, COUNTRY_COORDS, AU_PORT_COORDS
@@ -207,17 +208,31 @@ else:
         delta = dt - now
         return round(max(delta.total_seconds() / 86400, 0.0), 2)
 
+    def _raw_eta_days(dt_str: str) -> float:
+        """Unclamped delta in days — negative means the event is in the past."""
+        if not dt_str:
+            return None
+        try:
+            dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+        except ValueError:
+            return None
+        return (dt - now).total_seconds() / 86400
+
     arrivals = arrivals.with_columns([
         pl.col("date_time").map_elements(_eta_from_now, return_dtype=pl.String).alias("eta"),
         pl.col("date_time").map_elements(_eta_days, return_dtype=pl.Float64).alias("eta_days"),
+        pl.col("date_time").map_elements(_raw_eta_days, return_dtype=pl.Float64).alias("_raw_eta_days"),
     ])
 
-    # In-port ETA override
-    is_in_port = pl.col("movement").str.to_lowercase().str.contains("removal|shift|in port|external")
+    # In-port ETA override — only applies when the movement is current/recent
+    # (within 12 hours past or future). Future removals/shifts are NOT "In Port".
+    is_movement_type = pl.col("movement").str.to_lowercase().str.contains("removal|shift|in port|external")
+    is_current = pl.col("_raw_eta_days").is_null().not_() & (pl.col("_raw_eta_days") <= 0.5)
+    is_in_port = is_movement_type & is_current
     arrivals = arrivals.with_columns([
         pl.when(is_in_port).then(pl.lit("In Port")).otherwise(pl.col("eta")).alias("eta"),
         pl.when(is_in_port).then(pl.lit(0.0)).otherwise(pl.col("eta_days")).alias("eta_days"),
-    ])
+    ]).drop("_raw_eta_days")
 
     # Deduplicate by vessel name — keep row closest to arrival
     arrivals = (
@@ -297,9 +312,146 @@ else:
         & (pl.col("cargo_category").is_in(cargo_filter) | (pl.col("cargo_category") == ""))
     )
 
+    # ── ETA Arrival Window Histogram ──────────────────────────────
+    import pandas as pd
+
+    ETA_BUCKETS = [f"{i} to {i+2}" for i in range(0, 30, 2)] + ["30+"]
+
+    def _eta_bucket(eta_d) -> str:
+        if eta_d is None or eta_d > 30:
+            return "30+"
+        for i in range(0, 30, 2):
+            if eta_d <= i + 2:
+                return f"{i} to {i+2}"
+        return "30+"
+
+    filtered_bucketed = filtered.with_columns(
+        pl.col("eta_days").map_elements(_eta_bucket, return_dtype=pl.String).alias("eta_bucket")
+    )
+
+    CARGO_COLORS = {
+        "Crude Oil":    "#8B0000",
+        "Oil Products": "#1f77b4",
+        "Chemical/Oil": "#ff7f0e",
+        "LPG":          "#9467bd",
+        "LNG":          "#2ca02c",
+        "Bitumen":      "#7f7f7f",
+        "Tanker (other)": "#bcbd22",
+    }
+    # All cargo categories present in the filtered data (for legend ordering)
+    all_cargo_cats = [c for c in CARGO_COLORS if c in (
+        filtered_bucketed["cargo_category"].unique().to_list()
+    )]
+    # Include any categories not in our CARGO_COLORS dict
+    extra_cats = [
+        c for c in filtered_bucketed["cargo_category"].unique().to_list()
+        if c and c not in CARGO_COLORS and c not in all_cargo_cats
+    ]
+    all_cargo_cats += extra_cats
+
+    _vol_agg = (
+        pl.col("est_volume_ml").sum().alias("volume_ml")
+        if "est_volume_ml" in filtered_bucketed.columns
+        else pl.lit(0.0).alias("volume_ml")
+    )
+    # Group by bucket AND cargo category for stacked bars
+    bucket_cargo_agg = (
+        filtered_bucketed
+        .group_by(["eta_bucket", "cargo_category"])
+        .agg([pl.len().alias("count"), _vol_agg])
+    )
+    bucket_cargo_pd = bucket_cargo_agg.to_pandas()
+    bucket_cargo_pd["_order"] = bucket_cargo_pd["eta_bucket"].map(
+        {b: i for i, b in enumerate(ETA_BUCKETS)}
+    )
+    bucket_cargo_pd = bucket_cargo_pd.sort_values("_order").drop(columns=["_order"])
+
+    # Histogram header row
+    hist_title_col, hist_clear_col = st.columns([5, 1])
+    with hist_title_col:
+        st.subheader("Arrival Window")
+    with hist_clear_col:
+        selected_bucket = st.session_state.get("eta_bucket_selected")
+        if selected_bucket:
+            if st.button(f"✕ {selected_bucket} days", key="clear_bucket", help="Clear ETA filter"):
+                st.session_state["eta_bucket_selected"] = None
+                st.rerun()
+
+    hist_chart_col, hist_opt_col = st.columns([5, 1])
+    with hist_opt_col:
+        hist_metric = st.radio("Show", ["Count", "Volume (ML)"], key="hist_metric")
+
+    with hist_chart_col:
+        selected_bucket = st.session_state.get("eta_bucket_selected")
+        y_col = "count" if hist_metric == "Count" else "volume_ml"
+        y_label = "Tankers" if hist_metric == "Count" else "Volume (ML)"
+
+        fig_hist = go.Figure()
+        fallback_colors = px.colors.qualitative.Set1
+        for i, cat in enumerate(all_cargo_cats):
+            cat_data = bucket_cargo_pd[bucket_cargo_pd["cargo_category"] == cat]
+            # Merge against full bucket list to get zeros for missing buckets
+            cat_merged = pd.DataFrame({"eta_bucket": ETA_BUCKETS}).merge(
+                cat_data[["eta_bucket", y_col]], on="eta_bucket", how="left"
+            ).fillna(0)
+            color = CARGO_COLORS.get(cat, fallback_colors[i % len(fallback_colors)])
+            # Dim non-selected buckets when a filter is active
+            if selected_bucket:
+                opacities = [1.0 if b == selected_bucket else 0.25 for b in cat_merged["eta_bucket"]]
+            else:
+                opacities = [1.0] * len(cat_merged)
+            fig_hist.add_trace(go.Bar(
+                name=cat or "Unknown",
+                x=cat_merged["eta_bucket"],
+                y=cat_merged[y_col],
+                marker=dict(color=color, opacity=opacities),
+                hovertemplate=(
+                    f"<b>%{{x}} days</b><br>{cat}<br>"
+                    + y_label + ": %{y:,.0f}<extra></extra>"
+                ),
+            ))
+        fig_hist.update_layout(
+            barmode="stack",
+            xaxis_title="Days to Arrival",
+            yaxis_title=y_label,
+            height=300,
+            margin=dict(t=5, b=5, l=0, r=0),
+            xaxis=dict(
+                type="category",
+                categoryorder="array",
+                categoryarray=ETA_BUCKETS,
+            ),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            bargap=0.1,
+        )
+        event = st.plotly_chart(
+            fig_hist, use_container_width=True,
+            on_select="rerun", selection_mode="points",
+            key="eta_hist",
+        )
+        # Handle click — update session state and rerun to apply filter
+        if event and hasattr(event, "selection"):
+            pts = (event.selection or {}).get("points", [])
+            if pts:
+                clicked = pts[0].get("x")
+                if clicked != st.session_state.get("eta_bucket_selected"):
+                    st.session_state["eta_bucket_selected"] = clicked
+                    st.rerun()
+
+    # Apply bucket cross-filter
+    selected_bucket = st.session_state.get("eta_bucket_selected")
+    if selected_bucket:
+        display_df = filtered_bucketed.filter(pl.col("eta_bucket") == selected_bucket)
+        st.info(
+            f"Filtered to **{selected_bucket} days** — showing {len(display_df)} of "
+            f"{len(filtered)} tankers. Click the same bar or **✕** above to clear."
+        )
+    else:
+        display_df = filtered_bucketed
+
     def _col_max(col: str, default: float) -> float:
-        if col in filtered.columns:
-            v = filtered[col].max()
+        if col in display_df.columns:
+            v = display_df[col].max()
             if v is not None:
                 return float(v)
         return default
@@ -317,9 +469,9 @@ else:
         "v_imo", "v_year_built", "v_length_m", "v_beam_m",
         "est_volume_ml", "est_kbbl", "est_confidence", "from_location",
     ]
-    st.subheader(f"Tanker Arrivals ({len(filtered)})")
+    st.subheader(f"Tanker Arrivals ({len(display_df)})")
     st.dataframe(
-        filtered.select([c for c in table_cols if c in filtered.columns]).to_pandas(),
+        display_df.select([c for c in table_cols if c in display_df.columns]).to_pandas(),
         use_container_width=True,
         height=500,
         column_config={
@@ -347,7 +499,7 @@ else:
     # Origin Bubble Map
     st.subheader("Tanker Origins")
     map_rows = []
-    for row in filtered.iter_rows(named=True):
+    for row in display_df.iter_rows(named=True):
         if row["origin_type"] == "International" and row["origin_country"]:
             coords = COUNTRY_COORDS.get(row["origin_country"])
             if coords:
@@ -386,7 +538,7 @@ else:
     col_l, col_r = st.columns(2)
     with col_l:
         st.subheader("By Origin")
-        by_origin = filtered.group_by("origin_type").len().sort("len", descending=True)
+        by_origin = display_df.group_by("origin_type").len().sort("len", descending=True)
         fig = px.pie(by_origin.to_pandas(), values="len", names="origin_type",
                      color_discrete_sequence=px.colors.qualitative.Set2)
         fig.update_layout(height=350)
@@ -395,7 +547,7 @@ else:
     with col_r:
         st.subheader("By Country (Top 15)")
         by_country = (
-            filtered.filter(pl.col("origin_country") != "")
+            display_df.filter(pl.col("origin_country") != "")
             .group_by("origin_country").len()
             .sort("len", descending=True).head(15)
         )
@@ -411,7 +563,7 @@ else:
 
     # Tankers by port
     st.subheader("Tanker Arrivals by Port")
-    by_port = filtered.group_by(["port", "origin_type"]).len().sort("port")
+    by_port = display_df.group_by(["port", "origin_type"]).len().sort("port")
     fig3 = px.bar(
         by_port.to_pandas(), x="port", y="len", color="origin_type",
         labels={"len": "Tankers", "port": "Port", "origin_type": "Origin"},
@@ -426,7 +578,7 @@ else:
     vol_col_l, vol_col_r = st.columns(2)
     with vol_col_l:
         st.subheader("Volume by Origin (kbbl)")
-        vol_origin = filtered.group_by("origin_type").agg(pl.col("est_kbbl").sum().alias("kbbl")).sort("kbbl", descending=True)
+        vol_origin = display_df.group_by("origin_type").agg(pl.col("est_kbbl").sum().alias("kbbl")).sort("kbbl", descending=True)
         fig_vo = px.pie(vol_origin.to_pandas(), values="kbbl", names="origin_type",
                         color_discrete_sequence=px.colors.qualitative.Set2)
         fig_vo.update_layout(height=350)
@@ -435,7 +587,7 @@ else:
     with vol_col_r:
         st.subheader("Volume by Country (Top 15, kbbl)")
         vol_country = (
-            filtered.filter(pl.col("origin_country") != "")
+            display_df.filter(pl.col("origin_country") != "")
             .group_by("origin_country").agg(pl.col("est_kbbl").sum().alias("kbbl"))
             .sort("kbbl", descending=True).head(15)
         )
@@ -450,7 +602,7 @@ else:
             st.plotly_chart(fig_vc, use_container_width=True)
 
     st.subheader("Volume by Port (kbbl)")
-    vol_port = filtered.group_by(["port", "origin_type"]).agg(pl.col("est_kbbl").sum().alias("kbbl")).sort("port")
+    vol_port = display_df.group_by(["port", "origin_type"]).agg(pl.col("est_kbbl").sum().alias("kbbl")).sort("port")
     fig_vp = px.bar(
         vol_port.to_pandas(), x="port", y="kbbl", color="origin_type",
         labels={"kbbl": "Volume (kbbl)", "port": "Port", "origin_type": "Origin"},

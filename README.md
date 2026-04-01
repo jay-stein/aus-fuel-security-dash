@@ -5,12 +5,13 @@ Decision-support dashboard for monitoring Australia's fuel supply security. Buil
 ## Pages
 
 - **Situation Room** — RAG status overview, alerts, key indicators at a glance
+- **Demand Signals** — Weekly MSO stock data (DCCEEW Power BI) + monthly APS consumption trends
 - **Supply Security** — Consumption cover days, stock levels, drawdown trends
 - **IEA Obligation** — 90-day net import cover compliance tracking
 - **Import Risk** — Source country concentration, HHI index, chokepoint analysis
 - **Incoming Tankers** — Live tanker movements from 7 state port authorities
 - **Wholesale Prices** — Brent crude, terminal gate prices, fuel futures
-- **Tanker Tracker** — Live AIS vessel tracking (coming soon)
+- **Tanker Tracker** — Live AIS positions + port-schedule overlay + dead-reckoned estimates
 
 ## Setup
 
@@ -39,7 +40,9 @@ uv run streamlit run app.py
 ## Data Sources
 
 - [DCCEEW Australian Petroleum Statistics](https://data.gov.au/data/dataset/australian-petroleum-statistics)
+- [DCCEEW MSO Weekly Stocks](https://www.dcceew.gov.au/energy/petroleum/minimum-stockholding-obligation) — via public Power BI API
 - Port authority feeds (NSW, VIC, WA, QLD, SA, NT, TAS)
+- [AISStream.io](https://aisstream.io) — live AIS vessel positions (API key required)
 - FRED (Brent crude)
 - AIP (terminal gate prices)
 - Yahoo Finance (fuel futures)

@@ -14,4 +14,5 @@ dependencies = [
     "polars>=1.39.3",
     "streamlit>=1.55.0",
     "thefuzz>=0.22.1",
+    "websockets>=14.0",
 ]

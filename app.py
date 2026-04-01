@@ -28,6 +28,44 @@ Navigate using the sidebar to access:
 - **Tanker Tracker** — Live AIS vessel tracking (coming soon)
 """)
 
+# ── Offline pre-cache ─────────────────────────────────────────
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Offline / Pre-cache**")
+if st.sidebar.button("Cache all data now", help="Fetch and save all data sources to disk so the dashboard works without internet"):
+    from data_loader import load_brent_crude, load_fuel_futures, load_tgp_data, load_mso_weekly
+    from port_scraper import scrape_all_ports
+    from ais_tracker import fetch_ais_snapshot
+
+    results = {}
+    progress = st.sidebar.progress(0, text="Starting…")
+
+    steps = [
+        ("Brent crude (FRED)",   lambda: load_brent_crude()),
+        ("Fuel futures (Yahoo)", lambda: load_fuel_futures()),
+        ("Terminal gate prices", lambda: load_tgp_data()),
+        ("MSO weekly stocks",    lambda: load_mso_weekly()),
+        ("Port schedules",       lambda: scrape_all_ports()),
+        ("AIS tanker positions", lambda: fetch_ais_snapshot()),
+    ]
+
+    for i, (label, fn) in enumerate(steps):
+        progress.progress(i / len(steps), text=f"Fetching {label}…")
+        try:
+            fn()
+            results[label] = "ok"
+        except Exception as e:
+            results[label] = f"failed: {e}"
+
+    progress.progress(1.0, text="Done")
+
+    ok = [k for k, v in results.items() if v == "ok"]
+    failed = {k: v for k, v in results.items() if v != "ok"}
+    if ok:
+        st.sidebar.success(f"Cached: {', '.join(ok)}")
+    if failed:
+        for k, v in failed.items():
+            st.sidebar.warning(f"{k}: {v}")
+
 # Sidebar footer
 st.sidebar.markdown("---")
 st.sidebar.caption(

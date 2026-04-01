@@ -703,12 +703,29 @@ async def _collect_positions(api_key: str, mmsi_map: dict[str, str],
     return positions
 
 
+AIS_CACHE_MAX_AGE = timedelta(hours=12)
+
+
 def fetch_ais_snapshot() -> dict[str, dict]:
     """Synchronous entry point: fetch AIS positions, cache to disk.
 
-    Uses ThreadPoolExecutor to avoid event-loop conflicts in Streamlit.
-    Falls back to stale disk cache on any failure.
+    Returns the disk cache unchanged if it is younger than AIS_CACHE_MAX_AGE
+    (12 h).  Uses ThreadPoolExecutor to avoid event-loop conflicts in
+    Streamlit.  Falls back to stale disk cache on any fetch failure.
     """
+    # Return disk cache if fresh enough (avoids a 45-second fetch)
+    if POSITIONS_CACHE.exists():
+        try:
+            raw = json.loads(POSITIONS_CACHE.read_text(encoding="utf-8"))
+            fetched_utc = raw.get("_meta", {}).get("fetched_utc")
+            if fetched_utc:
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(fetched_utc)
+                if age < AIS_CACHE_MAX_AGE:
+                    raw.pop("_meta", None)
+                    return raw
+        except Exception:
+            pass
+
     api_key = get_api_key()
     if not api_key:
         return _load_disk_cache()
