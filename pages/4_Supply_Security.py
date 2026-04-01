@@ -22,7 +22,12 @@ st.set_page_config(page_title="Supply Security", page_icon="🛡️", layout="wi
 st.title("Australian Fuel Supply Security")
 
 # ── Section 1: Consumption Cover — big bold metrics at top ──
-cover = load_consumption_cover()
+try:
+    cover = load_consumption_cover()
+except Exception as e:
+    st.error(f"Australian Petroleum Statistics data is unavailable: {e}")
+    st.info("The workbook is downloaded automatically on first load. Try refreshing in a minute.")
+    st.stop()
 avail_cover = {k: v for k, v in COVER_COLS.items() if k in cover.columns}
 
 latest = cover.tail(1)

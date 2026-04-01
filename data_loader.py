@@ -18,31 +18,69 @@ _HTTP_HEADERS = {
 _CKAN_API = "https://data.gov.au/api/3/action/package_show?id=australian-petroleum-statistics"
 
 
+def _aps_direct_urls() -> list[str]:
+    """Return candidate direct download URLs for the APS workbook (most recent first)."""
+    from datetime import date
+    urls = []
+    today = date.today()
+    for months_back in range(0, 8):
+        year = today.year
+        month = today.month - months_back
+        while month <= 0:
+            month += 12
+            year -= 1
+        slug = f"{year}-{month:02d}"
+        urls.append(
+            f"https://www.energy.gov.au/sites/default/files/documents/"
+            f"australian-petroleum-statistics-{slug}.xlsx"
+        )
+    return urls
+
+
 def _ensure_aps_downloaded() -> None:
-    """Download the APS workbook from data.gov.au if not already present."""
+    """Download the APS workbook if not already present.
+
+    Tries the data.gov.au CKAN API first, then falls back to known direct
+    URL patterns on energy.gov.au.
+    """
     path = Path(XLSX_PATH)
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Find the latest XLSX resource via the CKAN API
-    meta = httpx.get(_CKAN_API, headers=_HTTP_HEADERS, timeout=20)
-    meta.raise_for_status()
-    resources = meta.json()["result"]["resources"]
-    xlsx_resources = [
-        r for r in resources
-        if r.get("format", "").upper() == "XLSX" and "petroleum-statistics" in r.get("url", "").lower()
-    ]
-    if not xlsx_resources:
-        # Fallback: take any XLSX resource
+
+    # Strategy 1: CKAN API
+    try:
+        meta = httpx.get(_CKAN_API, headers=_HTTP_HEADERS, timeout=20)
+        meta.raise_for_status()
+        resources = meta.json()["result"]["resources"]
         xlsx_resources = [r for r in resources if r.get("format", "").upper() == "XLSX"]
-    if not xlsx_resources:
-        raise RuntimeError("Could not find XLSX resource for Australian Petroleum Statistics on data.gov.au")
-    # Sort by created/last_modified descending to get the most recent
-    xlsx_resources.sort(key=lambda r: r.get("last_modified") or r.get("created") or "", reverse=True)
-    url = xlsx_resources[0]["url"]
-    resp = httpx.get(url, headers=_HTTP_HEADERS, timeout=120, follow_redirects=True)
-    resp.raise_for_status()
-    path.write_bytes(resp.content)
+        xlsx_resources.sort(
+            key=lambda r: r.get("last_modified") or r.get("created") or "", reverse=True
+        )
+        if xlsx_resources:
+            resp = httpx.get(
+                xlsx_resources[0]["url"], headers=_HTTP_HEADERS, timeout=120, follow_redirects=True
+            )
+            if resp.status_code == 200 and len(resp.content) > 10_000:
+                path.write_bytes(resp.content)
+                return
+    except Exception:
+        pass
+
+    # Strategy 2: direct energy.gov.au URL patterns
+    for url in _aps_direct_urls():
+        try:
+            resp = httpx.get(url, headers=_HTTP_HEADERS, timeout=60, follow_redirects=True)
+            if resp.status_code == 200 and len(resp.content) > 10_000:
+                path.write_bytes(resp.content)
+                return
+        except Exception:
+            continue
+
+    raise RuntimeError(
+        "Could not download the Australian Petroleum Statistics workbook from "
+        "data.gov.au or energy.gov.au. Pages that require it will be unavailable."
+    )
 
 
 def _clean_numeric(df: pl.DataFrame, skip_cols: list[str]) -> pl.DataFrame:

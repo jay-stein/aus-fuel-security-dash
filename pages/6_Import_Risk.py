@@ -13,7 +13,12 @@ from dashboard_utils import (
 st.set_page_config(page_title="Import Concentration & Risk", page_icon="🌍", layout="wide")
 st.title("Import Concentration & Supply Risk")
 
-by_country = load_imports_by_country()
+try:
+    by_country = load_imports_by_country()
+except Exception as e:
+    st.error(f"Australian Petroleum Statistics data is unavailable: {e}")
+    st.info("The workbook is downloaded automatically on first load. Try refreshing in a minute.")
+    st.stop()
 
 # Date range
 min_date = by_country["month"].min()

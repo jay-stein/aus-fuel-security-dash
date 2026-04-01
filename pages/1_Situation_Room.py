@@ -34,7 +34,12 @@ st.title("Fuel Security Situation Room")
 st.caption("Real-time status overview for Australian fuel supply security")
 
 # ── Load data ──
-cover = load_consumption_cover()
+try:
+    cover = load_consumption_cover()
+except Exception as e:
+    st.error(f"Australian Petroleum Statistics data is unavailable: {e}")
+    st.info("The workbook is downloaded automatically on first load. Try refreshing in a minute.")
+    st.stop()
 avail_cover = {k: v for k, v in COVER_COLS.items() if k in cover.columns}
 latest_cover = cover.tail(1)
 cover_month = latest_cover["month"].to_list()[0]
