@@ -53,6 +53,29 @@ Add to `.streamlit/secrets.toml`:
 api_key = "your-aisstream-key"
 ```
 
+## Deployment — Streamlit Community Cloud
+
+Deployed from GitHub: `jay-stein/aus-fuel-security-dash` (branch `master`, entry point `app.py`).
+
+**To deploy a new version:**
+1. `uv run python refresh_seed.py` — refresh seed data snapshots with current live data
+2. Commit seed files + any code changes, push to `master`
+3. Streamlit Cloud picks up the push automatically
+
+**Seed data (`seed/`)** — committed JSON snapshots used as a last-resort fallback when the
+app cold-starts and live fetches haven't run yet. Covers: MSO weekly, Brent crude, fuel futures,
+terminal gate prices. The loader chain is:
+`fresh data/ cache → live fetch → stale data/ cache → seed/ snapshot`
+
+**APS workbook** — auto-downloaded from data.gov.au on first load (via CKAN API) if not present.
+Takes ~10–15 s on cold start. The `data/` directory is ephemeral on Community Cloud (resets on restart).
+
+**Secrets** — add AISStream key in the Streamlit Cloud dashboard under App settings → Secrets:
+```toml
+[aisstream]
+api_key = "your-key"
+```
+
 ## Conventions
 
 - RAG thresholds live in `dashboard_utils.py` — do not hardcode them in pages
