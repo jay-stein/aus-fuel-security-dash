@@ -15,71 +15,46 @@ _HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 }
 
-_CKAN_API = "https://data.gov.au/api/3/action/package_show?id=australian-petroleum-statistics"
-
-
-def _aps_direct_urls() -> list[str]:
-    """Return candidate direct download URLs for the APS workbook (most recent first)."""
-    from datetime import date
-    urls = []
-    today = date.today()
-    for months_back in range(0, 8):
-        year = today.year
-        month = today.month - months_back
-        while month <= 0:
-            month += 12
-            year -= 1
-        slug = f"{year}-{month:02d}"
-        urls.append(
-            f"https://www.energy.gov.au/sites/default/files/documents/"
-            f"australian-petroleum-statistics-{slug}.xlsx"
-        )
-    return urls
+_APS_SEED = Path("seed/australian-petroleum-statistics.xlsx")
 
 
 def _ensure_aps_downloaded() -> None:
-    """Download the APS workbook if not already present.
+    """Ensure the APS workbook is present in data/.
 
-    Tries the data.gov.au CKAN API first, then falls back to known direct
-    URL patterns on energy.gov.au.
+    Uses the committed seed copy (seed/australian-petroleum-statistics.xlsx)
+    on first load. Falls back to downloading from data.gov.au if the seed
+    is somehow missing (e.g. very old deploy).
     """
+    import shutil
     path = Path(XLSX_PATH)
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Strategy 1: CKAN API
+    # Use committed seed copy — no network needed
+    if _APS_SEED.exists():
+        shutil.copy2(_APS_SEED, path)
+        return
+
+    # Last resort: try to download from data.gov.au
+    _ckan = "https://data.gov.au/api/3/action/package_show?id=australian-petroleum-statistics"
     try:
-        meta = httpx.get(_CKAN_API, headers=_HTTP_HEADERS, timeout=20)
+        meta = httpx.get(_ckan, headers=_HTTP_HEADERS, timeout=20)
         meta.raise_for_status()
         resources = meta.json()["result"]["resources"]
-        xlsx_resources = [r for r in resources if r.get("format", "").upper() == "XLSX"]
-        xlsx_resources.sort(
-            key=lambda r: r.get("last_modified") or r.get("created") or "", reverse=True
-        )
-        if xlsx_resources:
-            resp = httpx.get(
-                xlsx_resources[0]["url"], headers=_HTTP_HEADERS, timeout=120, follow_redirects=True
-            )
+        xlsx = [r for r in resources if r.get("format", "").upper() == "XLSX"]
+        xlsx.sort(key=lambda r: r.get("last_modified") or r.get("created") or "", reverse=True)
+        if xlsx:
+            resp = httpx.get(xlsx[0]["url"], headers=_HTTP_HEADERS, timeout=120, follow_redirects=True)
             if resp.status_code == 200 and len(resp.content) > 10_000:
                 path.write_bytes(resp.content)
                 return
     except Exception:
         pass
 
-    # Strategy 2: direct energy.gov.au URL patterns
-    for url in _aps_direct_urls():
-        try:
-            resp = httpx.get(url, headers=_HTTP_HEADERS, timeout=60, follow_redirects=True)
-            if resp.status_code == 200 and len(resp.content) > 10_000:
-                path.write_bytes(resp.content)
-                return
-        except Exception:
-            continue
-
     raise RuntimeError(
-        "Could not download the Australian Petroleum Statistics workbook from "
-        "data.gov.au or energy.gov.au. Pages that require it will be unavailable."
+        "Australian Petroleum Statistics workbook not found. "
+        "Run refresh_seed.py locally and commit seed/ before deploying."
     )
 
 
