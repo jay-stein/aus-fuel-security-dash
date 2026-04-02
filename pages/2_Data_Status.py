@@ -17,7 +17,7 @@ st.caption("Cache state and freshness for every data source used by the dashboar
 
 # ── Seed manifest ─────────────────────────────────────────────
 seed_ts = seed_refreshed_at()
-seed_date = seed_ts.strftime("%-d %b %Y %H:%M UTC") if seed_ts else "unknown"
+seed_date = seed_ts.strftime("%d %b %Y %H:%M UTC") if seed_ts else "unknown"
 st.info(f"**Seed snapshot** last refreshed: **{seed_date}**  ·  "
         f"Run `uv run python refresh_seed.py` locally and commit `seed/` to update.")
 
@@ -81,7 +81,7 @@ def _last_updated(runtime: Path, seed: Path | None) -> str:
             return f"{int(age.total_seconds() / 60)}m ago"
         if age < timedelta(hours=48):
             return f"{int(age.total_seconds() / 3600)}h ago"
-        return ts.strftime("%-d %b %Y")
+        return ts.strftime("%d %b %Y")
 
     # Check runtime cache
     if runtime.suffix == ".json":

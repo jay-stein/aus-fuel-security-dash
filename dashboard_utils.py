@@ -142,7 +142,7 @@ def render_data_freshness_sidebar() -> None:
     from config import is_offline, seed_refreshed_at
     if is_offline():
         ts = seed_refreshed_at()
-        date_str = ts.strftime("%-d %b %Y") if ts else "unknown"
+        date_str = ts.strftime("%d %b %Y") if ts else "unknown"
         st.sidebar.warning(f"Offline mode — data as at {date_str}")
     else:
         st.sidebar.caption("Live data — refreshes on each page load")
