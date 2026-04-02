@@ -10,9 +10,14 @@ from dashboard_utils import BRENT_AMBER, BRENT_RED
 import polars as pl
 
 st.set_page_config(page_title="Wholesale Prices", page_icon="💲", layout="wide")
-from dashboard_utils import render_data_freshness_sidebar
+from dashboard_utils import render_data_freshness_sidebar, render_page_data_freshness
 render_data_freshness_sidebar()
 st.title("Wholesale Prices & Benchmarks")
+render_page_data_freshness([
+    ("Brent", "data/brent_prices.json", 6),
+    ("Futures", "data/futures.json", 6),
+    ("TGP", "data/aip_tgp.json", 24),
+])
 st.caption(
     "Brent crude drives global oil prices. Australian wholesale fuel is priced off "
     "Singapore benchmarks (MOGAS 95 for petrol, Gasoil 10ppm for diesel) with a ~10-day lag. "

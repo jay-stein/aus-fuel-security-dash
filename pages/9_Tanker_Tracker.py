@@ -24,9 +24,14 @@ from ais_tracker import (
 )
 
 st.set_page_config(page_title="Fuel Tanker Tracker", page_icon="🗺️", layout="wide")
-from dashboard_utils import render_data_freshness_sidebar
+from dashboard_utils import render_data_freshness_sidebar, render_page_data_freshness
 render_data_freshness_sidebar()
 st.title("Fuel Tanker Tracker")
+render_page_data_freshness([
+    ("AIS", "data/ais_positions.json", 12),
+    ("Ports", "data/port_schedule.json", 3),
+    ("Vessels", "data/vessel_cache.json", None),
+])
 st.caption(
     "Real-time AIS positions of fuel tankers approaching or berthed at Australian ports. "
     "Data from AISStream.io — refreshes every 5 minutes."

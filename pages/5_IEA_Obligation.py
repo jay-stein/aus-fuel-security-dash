@@ -13,9 +13,10 @@ from data_loader import (
 from dashboard_utils import IEA_OBLIGATION_DAYS, rag_status, rag_color, rag_icon
 
 st.set_page_config(page_title="IEA 90-Day Obligation", page_icon="🌐", layout="wide")
-from dashboard_utils import render_data_freshness_sidebar
+from dashboard_utils import render_data_freshness_sidebar, render_page_data_freshness
 render_data_freshness_sidebar()
 st.title("IEA 90-Day Net Import Cover Obligation")
+render_page_data_freshness([("APS", "data/australian-petroleum-statistics.xlsx", None)])
 st.caption(
     "As an IEA member, Australia is required to hold oil stocks equivalent to "
     "at least 90 days of net imports. Australia has been consistently below this target."

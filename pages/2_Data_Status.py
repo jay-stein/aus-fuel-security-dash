@@ -54,15 +54,13 @@ def _status(runtime: Path, seed: Path | None, ttl: timedelta | None) -> tuple[st
     if runtime.suffix == ".json":
         cache = _read_json_cache(runtime)
         if cache:
-            # Try fetched_at field first, fall back to file mtime
             ts = _fetched_at(cache) or _file_mtime(runtime)
-            if ts and ttl and (now - ts) < ttl:
+            if ttl is None or (ts and (now - ts) < ttl):
                 return "✅", "Live"
             return "⚠️", "Stale"
     elif runtime.exists():
-        # Binary file (xlsx) — check mtime
         ts = _file_mtime(runtime)
-        if ts and ttl and (now - ts) < ttl:
+        if ttl is None or (ts and (now - ts) < ttl):
             return "✅", "Live"
         return "⚠️", "Stale"
 

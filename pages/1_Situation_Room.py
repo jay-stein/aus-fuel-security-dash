@@ -30,9 +30,15 @@ def _cached_scrape_all(tankers_only: bool = False):
 
 
 st.set_page_config(page_title="Situation Room", page_icon="🎯", layout="wide")
-from dashboard_utils import render_data_freshness_sidebar
+from dashboard_utils import render_data_freshness_sidebar, render_page_data_freshness
 render_data_freshness_sidebar()
 st.title("Fuel Security Situation Room")
+render_page_data_freshness([
+    ("APS", "data/australian-petroleum-statistics.xlsx", None),
+    ("MSO", "data/mso_weekly.json", 6),
+    ("Ports", "data/port_schedule.json", 3),
+    ("Brent", "data/brent_prices.json", 6),
+])
 st.caption("Real-time status overview for Australian fuel supply security")
 
 # ── Load data ──

@@ -136,6 +136,65 @@ HHI_AMBER = 2500   # Moderately concentrated
 # Above 2500 = highly concentrated (red)
 
 
+def _cache_age_label(path, ttl_hours: float | None = None) -> str:
+    """Return a short freshness label for a cache file, e.g. '✅ 2h ago' or '⚠️ 8h ago'."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    p = Path(path)
+    now = datetime.now(tz=timezone.utc)
+
+    ts = None
+    if p.suffix == ".json" and p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            raw = data.get("fetched_at") or data.get("_meta", {}).get("fetched_utc")
+            if raw:
+                ts = datetime.fromisoformat(raw)
+        except Exception:
+            pass
+        if ts is None:
+            try:
+                ts = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+            except Exception:
+                pass
+    elif p.exists():
+        try:
+            ts = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+        except Exception:
+            pass
+
+    if ts is None:
+        seed_p = Path(str(path).replace("data/", "seed/"))
+        if seed_p.exists():
+            return "🌱 seed"
+        return "❌ missing"
+
+    age = now - ts
+    if age < timedelta(hours=1):
+        age_str = f"{int(age.total_seconds() / 60)}m ago"
+    elif age < timedelta(hours=48):
+        age_str = f"{int(age.total_seconds() / 3600)}h ago"
+    else:
+        age_str = ts.strftime("%d %b")
+
+    if ttl_hours is None or age < timedelta(hours=ttl_hours):
+        return f"✅ {age_str}"
+    return f"⚠️ {age_str}"
+
+
+def render_page_data_freshness(sources: list[tuple[str, str, float | None]]) -> None:
+    """Render a compact data freshness row below a page title.
+
+    sources: list of (label, cache_path, ttl_hours)
+    Example: [("MSO", "data/mso_weekly.json", 6), ("APS", "data/aus...", None)]
+    """
+    import streamlit as st
+    parts = [f"**{label}** {_cache_age_label(path, ttl)}" for label, path, ttl in sources]
+    st.caption("Data freshness — " + " · ".join(parts))
+
+
 def render_data_freshness_sidebar() -> None:
     """Show data freshness info in the sidebar. Call from every page."""
     import streamlit as st

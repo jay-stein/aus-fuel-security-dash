@@ -1242,8 +1242,9 @@ def scrape_all_ports(tankers_only: bool = False) -> pl.DataFrame:
         except Exception:
             pass
 
-    # No fresh runtime cache — serve seed snapshot rather than scraping live
-    if _PORT_SEED.exists():
+    # In offline mode, serve seed before attempting any live scrape
+    from config import is_offline
+    if is_offline() and _PORT_SEED.exists():
         try:
             cached = json.loads(_PORT_SEED.read_text(encoding="utf-8"))
             return _df_from_cache(cached["data"], tankers_only)
