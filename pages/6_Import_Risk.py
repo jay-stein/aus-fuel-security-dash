@@ -11,6 +11,8 @@ from dashboard_utils import (
 )
 
 st.set_page_config(page_title="Import Concentration & Risk", page_icon="🌍", layout="wide")
+from dashboard_utils import render_data_freshness_sidebar
+render_data_freshness_sidebar()
 st.title("Import Concentration & Supply Risk")
 
 try:

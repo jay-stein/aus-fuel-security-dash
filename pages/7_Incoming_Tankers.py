@@ -16,6 +16,8 @@ def _cached_scrape_all(tankers_only: bool = False):
 
 
 st.set_page_config(page_title="Incoming Tankers", page_icon="🚢", layout="wide")
+from dashboard_utils import render_data_freshness_sidebar
+render_data_freshness_sidebar()
 st.title("Incoming Fuel Tankers")
 st.caption(
     "Tanker arrivals at Australian ports — filtered to fuel/oil vessels only. "

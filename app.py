@@ -5,6 +5,8 @@ Individual pages are in the pages/ directory.
 """
 
 import streamlit as st
+from config import is_offline, seed_refreshed_at
+from dashboard_utils import render_data_freshness_sidebar
 
 st.set_page_config(
     page_title="Australian Fuel Security Dashboard",
@@ -15,6 +17,16 @@ st.set_page_config(
 # Landing page content (shown on the main app.py)
 st.title("Australian Fuel Security Dashboard")
 st.caption("Decision support for national fuel supply security")
+
+render_data_freshness_sidebar()
+
+if is_offline():
+    ts = seed_refreshed_at()
+    date_str = ts.strftime("%-d %b %Y") if ts else "unknown"
+    st.info(
+        f"**Offline mode** — displaying pre-loaded data current as at **{date_str}**. "
+        "No live data is being fetched."
+    )
 
 st.markdown("""
 Navigate using the sidebar to access:

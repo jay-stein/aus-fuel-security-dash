@@ -136,6 +136,18 @@ HHI_AMBER = 2500   # Moderately concentrated
 # Above 2500 = highly concentrated (red)
 
 
+def render_data_freshness_sidebar() -> None:
+    """Show data freshness info in the sidebar. Call from every page."""
+    import streamlit as st
+    from config import is_offline, seed_refreshed_at
+    if is_offline():
+        ts = seed_refreshed_at()
+        date_str = ts.strftime("%-d %b %Y") if ts else "unknown"
+        st.sidebar.warning(f"Offline mode — data as at {date_str}")
+    else:
+        st.sidebar.caption("Live data — refreshes on each page load")
+
+
 def compute_hhi(shares: list[float]) -> float:
     """Compute Herfindahl-Hirschman Index from market shares (0-100 scale).
 

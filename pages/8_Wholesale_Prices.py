@@ -10,6 +10,8 @@ from dashboard_utils import BRENT_AMBER, BRENT_RED
 import polars as pl
 
 st.set_page_config(page_title="Wholesale Prices", page_icon="💲", layout="wide")
+from dashboard_utils import render_data_freshness_sidebar
+render_data_freshness_sidebar()
 st.title("Wholesale Prices & Benchmarks")
 st.caption(
     "Brent crude drives global oil prices. Australian wholesale fuel is priced off "

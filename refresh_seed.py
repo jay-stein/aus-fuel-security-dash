@@ -1,6 +1,8 @@
 """Refresh seed/ data snapshots from live sources. Run before deploying."""
 
+import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from data_loader import load_brent_crude, load_fuel_futures, load_mso_weekly, load_tgp_data
@@ -36,5 +38,10 @@ if APS_SRC.exists():
 else:
     print(f"  SKIP APS workbook — not found at {APS_SRC}")
     print(f"       Download from data.gov.au and save to {APS_SRC}, then re-run.")
+
+# ── Manifest ──────────────────────────────────────────────────
+manifest = {"refreshed_at": datetime.now(tz=timezone.utc).isoformat()}
+Path("seed/manifest.json").write_text(json.dumps(manifest, indent=2))
+print(f"  ok  manifest ({manifest['refreshed_at']})")
 
 print("\nDone. Commit seed/ before deploying.")

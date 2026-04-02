@@ -70,11 +70,19 @@ terminal gate prices. The loader chain is:
 **APS workbook** — auto-downloaded from data.gov.au on first load (via CKAN API) if not present.
 Takes ~10–15 s on cold start. The `data/` directory is ephemeral on Community Cloud (resets on restart).
 
-**Secrets** — add AISStream key in the Streamlit Cloud dashboard under App settings → Secrets:
+**Secrets** — add in the Streamlit Cloud dashboard under App settings → Secrets:
 ```toml
 [aisstream]
 api_key = "your-key"
+
+[app]
+offline_mode = true   # skips all live HTTP fetches; serves seed data instead
 ```
+
+**Offline mode** — when `offline_mode = true`, all live fetches (MSO, FRED, Yahoo, AIP, port
+scraper) are skipped and seed data is served directly. Every page shows an orange sidebar
+warning and the landing page shows a prominent info banner. Locally, omit the secret (or set
+env var `OFFLINE_MODE=0`) to use live scraping as normal.
 
 ## Conventions
 

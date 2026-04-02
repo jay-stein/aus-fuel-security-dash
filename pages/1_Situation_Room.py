@@ -30,6 +30,8 @@ def _cached_scrape_all(tankers_only: bool = False):
 
 
 st.set_page_config(page_title="Situation Room", page_icon="🎯", layout="wide")
+from dashboard_utils import render_data_freshness_sidebar
+render_data_freshness_sidebar()
 st.title("Fuel Security Situation Room")
 st.caption("Real-time status overview for Australian fuel supply security")
 

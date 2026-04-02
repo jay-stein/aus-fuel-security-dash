@@ -8,6 +8,8 @@ from pathlib import Path
 import httpx
 import polars as pl
 
+from config import is_offline
+
 
 XLSX_PATH = "data/australian-petroleum-statistics.xlsx"
 
@@ -394,6 +396,8 @@ def load_mso_weekly() -> pl.DataFrame:
             return _cast_mso_types(pl.DataFrame(cache["data"])).sort("week_ending")
 
     try:
+        if is_offline():
+            raise RuntimeError("offline")
         days_data = _fetch_mso_days()
         surplus_data = _fetch_mso_surplus()
         volumes_data = _fetch_mso_volumes()
@@ -481,6 +485,8 @@ def load_brent_crude(days: int = 180) -> pl.DataFrame:
         return df.with_columns(pl.col("date").str.to_date("%Y-%m-%d"))
 
     try:
+        if is_offline():
+            raise RuntimeError("offline")
         end = date.today()
         start = end - timedelta(days=days)
         url = (
@@ -522,6 +528,8 @@ def load_fuel_futures(days: int = 180) -> pl.DataFrame:
         return df.with_columns(pl.col("date").str.to_date("%Y-%m-%d"))
 
     try:
+        if is_offline():
+            raise RuntimeError("offline")
         end_ts = int(datetime.now().timestamp())
         start_ts = int((datetime.now() - timedelta(days=days)).timestamp())
 
@@ -574,6 +582,8 @@ def load_tgp_data(days: int = 180) -> tuple[pl.DataFrame, pl.DataFrame]:
         return _df_from_cache(cached["petrol"]), _df_from_cache(cached["diesel"])
 
     try:
+        if is_offline():
+            raise RuntimeError("offline")
         today = date.today()
         content = None
         for offset in range(10):
