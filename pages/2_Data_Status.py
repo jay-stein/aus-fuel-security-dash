@@ -255,3 +255,32 @@ st.caption(
     "🌱 **Seed** — serving committed baseline  ·  "
     "❌ **Missing** — no cache and no seed"
 )
+
+# ── Per-port scrape breakdown ─────────────────────────────────
+st.subheader("Port Schedules — per-port detail")
+
+from port_scraper import get_port_scrape_status  # noqa: E402
+
+port_status = get_port_scrape_status()
+if port_status:
+    port_rows = []
+    for state, info in port_status.items():
+        if info.get("ok"):
+            port_rows.append({
+                "State": state,
+                "Status": "✅ OK",
+                "Vessels loaded": info.get("count", "?"),
+                "Error": "",
+            })
+        else:
+            port_rows.append({
+                "State": state,
+                "Status": "❌ Failed",
+                "Vessels loaded": 0,
+                "Error": info.get("error", "unknown error"),
+            })
+    port_df = pl.DataFrame(port_rows)
+    st.dataframe(port_df.to_pandas(), use_container_width=True, hide_index=True)
+    st.caption("Status from the last scrape run. Hit **Refresh all data** above to re-scrape.")
+else:
+    st.info("No scrape run recorded yet — hit **Refresh all data** above to populate port status.")

@@ -1251,28 +1251,41 @@ def scrape_all_ports(tankers_only: bool = False) -> pl.DataFrame:
         except Exception:
             pass
 
-    try:
-        all_raw = []
-        all_raw.extend(scrape_nsw_ports())
-        all_raw.extend(scrape_geelong())
-        all_raw.extend(scrape_fremantle())
-        all_raw.extend(scrape_qships())
-        all_raw.extend(scrape_flinders())
-        all_raw.extend(scrape_darwin())
-        all_raw.extend(scrape_tasports())
+    # Scrape each port individually so one failure doesn't wipe out the rest
+    _SCRAPERS = [
+        ("NSW",       scrape_nsw_ports),
+        ("VIC",       scrape_geelong),
+        ("WA",        scrape_fremantle),
+        ("QLD",       scrape_qships),
+        ("SA",        scrape_flinders),
+        ("NT",        scrape_darwin),
+        ("TAS",       scrape_tasports),
+    ]
 
+    all_raw = []
+    port_status: dict[str, dict] = {}
+    any_succeeded = False
+
+    for label, fn in _SCRAPERS:
+        try:
+            rows = fn()
+            all_raw.extend(rows)
+            port_status[label] = {"ok": True, "count": len(rows)}
+            any_succeeded = True
+        except Exception as exc:
+            port_status[label] = {"ok": False, "error": str(exc)[:200]}
+
+    if any_succeeded:
         normalised = _normalise_rows(all_raw)
-        if not normalised:
-            return _empty_df()
+        df = pl.DataFrame(normalised, infer_schema_length=None) if normalised else _empty_df()
 
-        df = pl.DataFrame(normalised, infer_schema_length=None)
-
-        # Save full (unfiltered) data to disk
+        # Save full (unfiltered) data + per-port status to disk
         _PORT_CACHE.parent.mkdir(parents=True, exist_ok=True)
         tmp = _PORT_CACHE.with_suffix(".tmp")
         tmp.write_text(
             json.dumps({
                 "fetched_at": datetime.now(tz=timezone.utc).isoformat(),
+                "port_status": port_status,
                 "data": df.to_dicts(),
             }, default=str),
             encoding="utf-8",
@@ -1283,15 +1296,30 @@ def scrape_all_ports(tankers_only: bool = False) -> pl.DataFrame:
             df = df.filter(pl.col("is_tanker"))
         return df
 
-    except Exception:
-        for src in (_PORT_CACHE, _PORT_SEED):
-            if src.exists():
-                try:
-                    cached = json.loads(src.read_text(encoding="utf-8"))
-                    return _df_from_cache(cached["data"], tankers_only)
-                except Exception:
-                    pass
-        return _empty_df()
+    # All scrapers failed — fall back to disk cache or seed
+    for src in (_PORT_CACHE, _PORT_SEED):
+        if src.exists():
+            try:
+                cached = json.loads(src.read_text(encoding="utf-8"))
+                return _df_from_cache(cached["data"], tankers_only)
+            except Exception:
+                pass
+    return _empty_df()
+
+
+def get_port_scrape_status() -> dict[str, dict] | None:
+    """Return per-port scrape status from the last run, or None if no cache exists.
+
+    Each value is either {"ok": True, "count": N} or {"ok": False, "error": "..."}.
+    """
+    for src in (_PORT_CACHE, _PORT_SEED):
+        if src.exists():
+            try:
+                cached = json.loads(src.read_text(encoding="utf-8"))
+                return cached.get("port_status")
+            except Exception:
+                pass
+    return None
 
 
 if __name__ == "__main__":
