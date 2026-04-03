@@ -487,6 +487,35 @@ _COUNTRY_ALIASES = {
 }
 
 
+def classify_trade_direction(
+    to_location: str,
+    origin_type: str,
+    vessel_type: str,
+    cargo_type: str,
+) -> str:
+    """Classify whether a tanker is importing, exporting (in ballast to load), or coastal.
+
+    Returns one of: "Import", "Export", "Coastal", "Unknown"
+
+    Logic (priority order):
+    1. Destination berth is a known AU export terminal → Export
+    2. LNG vessel — Australia only exports LNG, never imports it → Export
+    3. Domestic origin → Coastal (port-to-port domestic transfer)
+    4. International origin → Import (delivering product from overseas)
+    """
+    to_lower = (to_location or "").lower()
+    if any(kw in to_lower for kw in _AU_EXPORT_BERTH_KEYWORDS):
+        return "Export"
+    combined = f"{vessel_type} {cargo_type}".lower()
+    if "lng" in combined:
+        return "Export"
+    if origin_type == "Domestic":
+        return "Coastal"
+    if origin_type == "International":
+        return "Import"
+    return "Unknown"
+
+
 def classify_origin(origin: str) -> tuple[str, str]:
     """Classify origin as domestic or international.
 
@@ -676,6 +705,28 @@ _PV_TYPE_CODES = {
 }
 
 # Berths that confirm a vessel is a tanker/chemical carrier, even without a (T) suffix.
+# Australian LNG/crude EXPORT terminal berth keywords.
+# If a vessel's to_location matches one of these, it is arriving in ballast to load for export.
+_AU_EXPORT_BERTH_KEYWORDS = (
+    "wickham point",    # Darwin LNG (INPEX/Shell)
+    "bladin point",     # Ichthys LNG onshore (Darwin)
+    "lng berth",        # Generic LNG export berth
+    "lng terminal",     # Generic LNG export terminal
+    "lng jetty",
+    "lng wharf",
+    "curtis island",    # Gladstone LNG (APLNG/QCLNG/GLNG)
+    "aplng",            # Australia Pacific LNG terminal
+    "qclng",            # Queensland Curtis LNG terminal
+    "glng",             # Gladstone LNG terminal
+    "pluto",            # Pluto LNG (Karratha, WA)
+    "wheatstone",       # Wheatstone LNG (Onslow, WA)
+    "ichthys",          # Ichthys LNG (Darwin)
+    "withnell bay",     # NWS LNG export berth (Dampier)
+    "gorgon",           # Gorgon LNG/crude export (Barrow Island)
+    "devil creek",      # Apache Energy gas terminal (WA)
+)
+
+
 # Only include dedicated petroleum/chemical berths — NOT general bulk berths like Lascelles.
 _PV_FUEL_BERTHS = {
     "gellibrand",       # ExxonMobil/Mobil fuel import terminal (Melbourne)
@@ -1277,6 +1328,7 @@ EMPTY_SCHEMA = {
     "to_location": pl.String,
     "customer": pl.String,
     "in_port": pl.String,
+    "trade_direction": pl.String,
 }
 
 
@@ -1351,6 +1403,12 @@ def _normalise_rows(raw_rows: list[dict]) -> list[dict]:
 
         n["agent"] = row.get("Agent", "")
         n["in_port"] = row.get("In port", "")
+        n["trade_direction"] = (
+            classify_trade_direction(
+                n["to_location"], n["origin_type"], n["vessel_type"], n["cargo_type"]
+            )
+            if n["is_tanker"] else ""
+        )
 
         normalised.append(n)
     return normalised

@@ -251,22 +251,41 @@ else:
         .unique(subset=["vessel"], keep="first")
     )
 
+    # Trade direction icons
+    _TRADE_DIR_ICON = {
+        "Import":  "🟢 Import",
+        "Export":  "🔴 Export",
+        "Coastal": "🔵 Coastal",
+        "Unknown": "⚪ Unknown",
+        "":        "",
+    }
+    if "trade_direction" in arrivals.columns:
+        arrivals = arrivals.with_columns(
+            pl.col("trade_direction")
+            .replace(_TRADE_DIR_ICON)
+            .alias("trade_dir_icon")
+        )
+
     # ── Supply Pipeline Summary ──
     st.subheader("Supply Pipeline")
-    intl_tankers = arrivals.filter(pl.col("origin_type") == "International")
-    total_vol_ml = intl_tankers["est_volume_ml"].sum() if "est_volume_ml" in intl_tankers.columns else 0
-    total_vol_ml = total_vol_ml or 0
+    import_tankers  = arrivals.filter(pl.col("trade_direction") == "Import") if "trade_direction" in arrivals.columns else arrivals.filter(pl.col("origin_type") == "International")
+    export_tankers  = arrivals.filter(pl.col("trade_direction") == "Export") if "trade_direction" in arrivals.columns else arrivals.head(0)
+    coastal_tankers = arrivals.filter(pl.col("trade_direction") == "Coastal") if "trade_direction" in arrivals.columns else arrivals.filter(pl.col("origin_type") == "Domestic")
+
+    import_vol_ml = import_tankers["est_volume_ml"].sum() if "est_volume_ml" in import_tankers.columns else 0
+    import_vol_ml = import_vol_ml or 0
 
     p1, p2, p3, p4 = st.columns(4)
-    p1.metric("International Tankers Inbound", len(intl_tankers))
-    p2.metric("Est. Volume On Water", f"{total_vol_ml:,.0f} ML")
-    p3.metric("Est. Volume (kbbl)", f"{total_vol_ml * 6.29:,.0f}")
-    domestic_tankers = arrivals.filter(pl.col("origin_type") == "Domestic")
-    p4.metric("Domestic Transfers", len(domestic_tankers))
+    p1.metric("🟢 Imports Inbound",    len(import_tankers))
+    p2.metric("🔴 Export (loading)",   len(export_tankers))
+    p3.metric("🔵 Coastal Transfers",  len(coastal_tankers))
+    p4.metric("Est. Import Volume",    f"{import_vol_ml:,.0f} ML")
 
     st.divider()
 
     # Summary metrics
+    intl_tankers = arrivals.filter(pl.col("origin_type") == "International")
+    domestic_tankers = arrivals.filter(pl.col("origin_type") == "Domestic")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Incoming Tankers", len(arrivals))
     c2.metric("Domestic", len(domestic_tankers))
@@ -299,20 +318,23 @@ else:
         arrivals = arrivals.filter(pl.col("cargo_category") != "LNG")
 
     # Filters
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
+        dir_opts = sorted([d for d in arrivals["trade_direction"].unique().to_list() if d]) if "trade_direction" in arrivals.columns else []
+        dir_filter = st.multiselect("Trade Direction", dir_opts, default=dir_opts) if dir_opts else dir_opts
+    with col2:
         origin_opts = arrivals["origin_type"].unique().sort().to_list()
         origin_filter = st.multiselect("Origin Type", origin_opts, default=origin_opts)
-    with col2:
+    with col3:
         country_opts = (
             arrivals.filter(pl.col("origin_country") != "")
             ["origin_country"].unique().sort().to_list()
         )
         country_filter = st.multiselect("Country", country_opts, default=country_opts)
-    with col3:
+    with col4:
         port_opts = arrivals["port"].unique().sort().to_list()
         port_filter = st.multiselect("Port", port_opts, default=port_opts, key="inc_port")
-    with col4:
+    with col5:
         cargo_opts = arrivals.filter(pl.col("cargo_category") != "")["cargo_category"].unique().sort().to_list()
         cargo_filter = st.multiselect("Cargo Category", cargo_opts, default=cargo_opts) if cargo_opts else []
 
@@ -322,6 +344,8 @@ else:
         & (pl.col("origin_country").is_in(country_filter) | (pl.col("origin_country") == ""))
         & (pl.col("cargo_category").is_in(cargo_filter) | (pl.col("cargo_category") == ""))
     )
+    if dir_filter and "trade_direction" in filtered.columns:
+        filtered = filtered.filter(pl.col("trade_direction").is_in(dir_filter))
 
     # ── ETA Arrival Window Histogram ──────────────────────────────
     import pandas as pd
@@ -474,7 +498,7 @@ else:
 
     # Main table
     table_cols = [
-        "vessel", "ship_type_detail", "cargo_category",
+        "vessel", "trade_dir_icon", "ship_type_detail", "cargo_category",
         "flag_img", "v_flag", "v_gt", "v_dwt",
         "port", "state", "eta", "eta_days", "origin_country", "origin_detail",
         "v_imo", "v_year_built", "v_length_m", "v_beam_m",
@@ -487,6 +511,7 @@ else:
         height=500,
         column_config={
             "vessel": "Vessel",
+            "trade_dir_icon": "Direction",
             "ship_type_detail": "Ship Type",
             "cargo_category": "Category",
             "flag_img": st.column_config.ImageColumn("Flag", width="small"),
@@ -505,6 +530,13 @@ else:
             "est_confidence": "Confidence",
             "from_location": "Last Port",
         },
+    )
+
+    st.caption(
+        "🟢 **Import** — delivering imported fuel to Australia  ·  "
+        "🔴 **Export** — arriving in ballast to load Australian LNG/crude for export  ·  "
+        "🔵 **Coastal** — moving product between Australian ports  ·  "
+        "Classification is based on origin port and destination berth; not guaranteed."
     )
 
     # Origin Bubble Map
