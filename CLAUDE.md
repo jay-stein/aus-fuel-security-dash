@@ -112,3 +112,15 @@ Weekly fuel stocks (diesel/jet/petrol) via public Power BI embed. No auth needed
   - `ais` — live AIS positions (triangle-up markers, full colour)
   - `port_schedule` — port-scraper "In Port" vessels (grey circle)
   - `estimated` — dead-reckoned positions from ETA (light grey open circle, dotted route)
+
+## External Reference Tools
+
+### ShipNext — Vessel Tracking & Voyage Intelligence
+
+- **URL pattern:** `https://shipnext.com/vessel/{IMO}/{VESSEL_NAME}`
+- **Example:** https://shipnext.com/vessel/1030703/CSK%20JUBILEE
+- **Useful for:** Current vessel position, live voyage progress (origin → destination),
+  ETA, vessel specs, AIS track history
+- **When to use:** Cross-checking vessel origin/destination from port scrapers, debugging
+  misclassified trade directions (Import/Export/Coastal), verifying ETA accuracy.
+  IMO number is available in the dashboard's `v_imo` field (from VesselFinder cache).
