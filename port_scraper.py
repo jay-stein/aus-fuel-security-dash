@@ -661,6 +661,137 @@ def scrape_geelong() -> list[dict]:
         return []
 
 
+# ─── Ports Victoria (Melbourne + Geelong) ─────────────────────
+
+# Vessel type codes used in Ports Victoria ship name suffix, e.g. "STI Winnie (T)"
+_PV_TYPE_CODES = {
+    "T": "Tanker",
+    "LP": "LPG Tanker",
+    "LG": "LNG Tanker",
+    "CT": "Chemical Tanker",
+    "PP": "Car Carrier",
+    "P": "Passenger",
+    "BM": "Bulk/Multi",
+    "SC": "Container",
+}
+
+# Berth keywords that identify petroleum/fuel terminals at Port of Melbourne
+_PV_FUEL_BERTHS = {
+    "gellibrand", "holden", "maribyrnong", "esso", "bp berth",
+}
+
+
+def _pv_port_from_berth(berth: str) -> str:
+    """Map a Ports Victoria berth name to a port label."""
+    b = berth.lower()
+    if any(k in b for k in ("geelong refinery", "corio", "lascelles")):
+        return "Geelong"
+    return "Melbourne"
+
+
+def _parse_ports_victoria(html: str) -> list[dict]:
+    """Parse the 5 ship-movement tables from ports.vic.gov.au."""
+    soup = BeautifulSoup(html, "lxml")
+    rows = []
+
+    _HEADING_MOVEMENT = {
+        "expected arrivals": "Arrival",
+        "actual arrivals": "Arrival",
+        "expected departures": "Departure",
+        "actual departures": "Departure",
+        "in port": "In Port",
+    }
+
+    current_movement = "Arrival"
+
+    for element in soup.find_all(["h2", "h3", "h4", "table"]):
+        if element.name in ("h2", "h3", "h4"):
+            heading = element.get_text(strip=True).lower()
+            for key, mv in _HEADING_MOVEMENT.items():
+                if key in heading:
+                    current_movement = mv
+                    break
+            continue
+
+        # --- table ---
+        thead = element.find("thead")
+        tbody = element.find("tbody")
+        if not thead or not tbody:
+            continue
+        headers = [th.get_text(strip=True) for th in thead.find_all("th")]
+        if not headers:
+            continue
+
+        is_inport = current_movement == "In Port"
+
+        for tr in tbody.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+            if not cells or not cells[0]:
+                continue
+
+            cell_map = {headers[i]: cells[i] for i in range(min(len(headers), len(cells)))}
+
+            # Clean vessel name and extract type code, e.g. "STI Winnie (T)" → name="STI Winnie", code="T"
+            raw_name = cells[0]
+            vessel_name = re.sub(r"\s*\([A-Z]+\)\s*$", "", raw_name).strip()
+            code_match = re.search(r"\(([A-Z]+)\)\s*$", raw_name)
+            vessel_type = _PV_TYPE_CODES.get(code_match.group(1), "") if code_match else ""
+
+            if is_inport:
+                # Columns: Ship Name | Berth | Arrived | ETD | To | Agent
+                berth = cell_map.get("Berth", "")
+                port = _pv_port_from_berth(berth)
+                date_time = cell_map.get("ETD", cell_map.get("Arrived", ""))
+                from_loc = ""
+                to_loc = cell_map.get("To", "")
+                agent = cell_map.get("Agent", "")
+                in_port = "Yes"
+            else:
+                # Columns: Ship Name | Date & Time | From | To | Agent
+                date_time = cell_map.get("Date & Time", "")
+                from_loc = cell_map.get("From", "")
+                to_loc = cell_map.get("To", "")
+                agent = cell_map.get("Agent", "")
+                berth = to_loc if current_movement == "Arrival" else from_loc
+                port = _pv_port_from_berth(berth)
+                in_port = ""
+
+            rows.append({
+                "port": port,
+                "state": "VIC",
+                "Vessel": vessel_name,
+                "Date & Time": date_time,
+                "Movement": current_movement,
+                "Vessel type": vessel_type,
+                "Agent": agent,
+                "From": from_loc,
+                "To": to_loc,
+                "In port": in_port,
+                "cargo_type": "",
+                "tonnage": None,
+                "length_m": None,
+                "customer": "",
+            })
+
+    return rows
+
+
+def scrape_ports_victoria() -> list[dict]:
+    """Scrape vessel movements from Ports Victoria (Melbourne + Geelong).
+
+    Source: https://ports.vic.gov.au/marine-operations/ship-movements/
+    5 tables: Expected Arrivals, Actual Arrivals, Expected Departures,
+    Actual Departures, In Port. Updated hourly by Ports Victoria.
+    Covers Gellibrand Pier and Holden Dock (Melbourne fuel import berths)
+    as well as Geelong Refinery berths.
+    """
+    url = "https://ports.vic.gov.au/marine-operations/ship-movements/"
+    with httpx.Client(headers=HEADERS, timeout=30, follow_redirects=True) as client:
+        resp = client.get(url)
+        resp.raise_for_status()
+        return _parse_ports_victoria(resp.text)
+
+
 # ─── Generic PortControl API helpers ──────────────────────────
 
 
@@ -1255,6 +1386,7 @@ def scrape_all_ports(tankers_only: bool = False) -> pl.DataFrame:
     _SCRAPERS = [
         ("NSW",       scrape_nsw_ports),
         ("VIC",       scrape_geelong),
+        ("Melbourne", scrape_ports_victoria),
         ("WA",        scrape_fremantle),
         ("QLD",       scrape_qships),
         ("SA",        scrape_flinders),
