@@ -722,6 +722,12 @@ def _parse_ports_victoria(html: str) -> list[dict]:
         if not headers:
             continue
 
+        # Detect In Port table by its unique column structure (Berth + Arrived + ETD)
+        # It has no preceding heading on the Ports Victoria page
+        header_set = {h.lower() for h in headers}
+        if "berth" in header_set and "arrived" in header_set:
+            current_movement = "In Port"
+
         is_inport = current_movement == "In Port"
 
         for tr in tbody.find_all("tr"):
