@@ -66,7 +66,7 @@ AU_LOCATIONS = {
     "adelaide", "port adelaide", "whyalla", "port lincoln",
     "sa ports",
     # VIC
-    "geelong", "melbourne", "portland", "hastings",
+    "geelong", "melbourne", "portland", "hastings", "westernport", "western port",
     # NSW
     "sydney", "botany", "port botany", "kembla", "port kembla", "newcastle",
     "eden",
@@ -111,6 +111,8 @@ AU_STATE_MAP = {
     "willis island": "QLD", "yorke island": "QLD", "yorkeys knob": "QLD",
     # TAS
     "devonport": "TAS", "hobart": "TAS", "bell bay": "TAS", "launceston": "TAS",
+    # VIC — additional locations
+    "westernport": "VIC", "western port": "VIC",  # Port of Hastings area
 }
 
 # Berth / wharf names within NSW ports — these are internal locations, not origins
@@ -118,6 +120,7 @@ _BERTH_KEYWORDS = [
     "dock", "berth", "wharf", "terminal", "kooragang", "mayfield",
     "dyke", "basin", "gore cove", "glebe island", "kurnell",
     "anchorage", "cruise terminal", "passenger terminal", "eglo",
+    "maribyrnong",  # Melbourne petroleum berth (Ports Victoria scraper)
 ]
 
 
@@ -172,6 +175,8 @@ PORT_COUNTRY_MAP = {
     "tanjung langsat": "Malaysia", "bintulu": "Malaysia", "labuan": "Malaysia",
     "kemaman": "Malaysia", "melaka": "Malaysia", "pasir gudang": "Malaysia",
     "sungai": "Malaysia", "linggi": "Malaysia", "malaysia": "Malaysia",
+    "klang": "Malaysia", "port klang": "Malaysia",
+    "kimanis": "Malaysia",  # Kimanis, Sabah
     # ── Thailand ────────────────────────────────────────────────
     "bangkok": "Thailand", "si racha": "Thailand", "sriracha": "Thailand",
     "map ta phut": "Thailand", "laem chabang": "Thailand",
