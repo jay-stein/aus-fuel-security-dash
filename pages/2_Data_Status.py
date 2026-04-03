@@ -261,15 +261,66 @@ st.subheader("Port Schedules — per-port detail")
 
 from port_scraper import get_port_scrape_status  # noqa: E402
 
+# Primary URL shown in the clickable link column (one per scraper)
+_PORT_PRIMARY_URL = {
+    "NSW":       "https://www.portauthoritynsw.com.au/port-operations/",
+    "VIC":       "https://geelongport.powerappsportals.com/Shipping/",
+    "Melbourne": "https://ports.vic.gov.au/marine-operations/ship-movements/",
+    "WA":        "https://www3.fremantleports.com.au/vtmis",
+    "QLD":       "https://qships.tmr.qld.gov.au/webx",
+    "SA":        "https://portmis.flindersports.com.au",
+    "NT":        "https://portinfo.darwinport.com.au/webx",
+    "TAS":       "https://tasports.com.au",
+}
+
+# Full list of pages scraped per scraper (for the expander)
+_PORT_ALL_URLS = {
+    "NSW": [
+        ("Sydney Harbour daily movements", "https://www.portauthoritynsw.com.au/port-operations/sydney-harbour/sydney-harbour-daily-vessel-movements"),
+        ("Port Botany daily movements", "https://www.portauthoritynsw.com.au/port-operations/port-botany/port-botany-daily-vessel-movements"),
+        ("Port Kembla daily movements", "https://www.portauthoritynsw.com.au/port-operations/port-kembla/port-kembla-daily-vessel-movements"),
+        ("Newcastle daily movements", "https://www.portauthoritynsw.com.au/port-operations/newcastle-harbour/newcastle-harbour-daily-vessel-movements"),
+    ],
+    "VIC": [
+        ("Geelong Port shipping schedule (Viva Energy PowerApps)", "https://geelongport.powerappsportals.com/Shipping/"),
+    ],
+    "Melbourne": [
+        ("Ports Victoria ship movements (Melbourne + Geelong)", "https://ports.vic.gov.au/marine-operations/ship-movements/"),
+    ],
+    "WA": [
+        ("Fremantle Ports VTMIS vessel movements", "https://www3.fremantleports.com.au/vtmis"),
+    ],
+    "QLD": [
+        ("QShips — Maritime Safety Queensland (all QLD ports)", "https://qships.tmr.qld.gov.au/webx"),
+    ],
+    "SA": [
+        ("Flinders Ports PortMIS — expected movements", "https://portmis.flindersports.com.au"),
+        ("Flinders Ports PortMIS — in-port vessels", "https://portmis.flindersports.com.au"),
+    ],
+    "NT": [
+        ("Darwin Port schedule", "https://portinfo.darwinport.com.au/webx"),
+        ("Darwin Port in-port vessels", "https://portinfo.darwinport.com.au/webx"),
+    ],
+    "TAS": [
+        ("TasPorts expected shipping", "https://tasports.com.au"),
+        ("TasPorts vessels in port", "https://tasports.com.au"),
+    ],
+}
+
 port_status = get_port_scrape_status()
 if port_status:
+    import pandas as pd
     port_rows = []
     for state, info in port_status.items():
+        n_pages = len(_PORT_ALL_URLS.get(state, []))
+        page_note = f"{n_pages} page{'s' if n_pages > 1 else ''}" if n_pages else ""
         if info.get("ok"):
             port_rows.append({
                 "State": state,
                 "Status": "✅ OK",
                 "Vessels loaded": info.get("count", "?"),
+                "Pages scraped": page_note,
+                "URL": _PORT_PRIMARY_URL.get(state, ""),
                 "Error": "",
             })
         else:
@@ -277,10 +328,26 @@ if port_status:
                 "State": state,
                 "Status": "❌ Failed",
                 "Vessels loaded": 0,
+                "Pages scraped": page_note,
+                "URL": _PORT_PRIMARY_URL.get(state, ""),
                 "Error": info.get("error", "unknown error"),
             })
-    port_df = pl.DataFrame(port_rows)
-    st.dataframe(port_df.to_pandas(), use_container_width=True, hide_index=True)
+    port_df = pd.DataFrame(port_rows)
+    st.dataframe(
+        port_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "URL": st.column_config.LinkColumn("Website", display_text="Open ↗"),
+        },
+    )
+
+    with st.expander("All scraped URLs"):
+        for state, pages in _PORT_ALL_URLS.items():
+            st.markdown(f"**{state}**")
+            for label, url in pages:
+                st.markdown(f"- [{label}]({url})")
+
     st.caption("Status from the last scrape run. Hit **Refresh all data** above to re-scrape.")
 else:
     st.info("No scrape run recorded yet — hit **Refresh all data** above to populate port status.")
