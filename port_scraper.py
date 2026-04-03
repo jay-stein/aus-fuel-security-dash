@@ -675,9 +675,17 @@ _PV_TYPE_CODES = {
     "SC": "Container",
 }
 
-# Berth keywords that identify petroleum/fuel terminals at Port of Melbourne
+# Berths that confirm a vessel is a tanker/chemical carrier, even without a (T) suffix.
+# Only include dedicated petroleum/chemical berths — NOT general bulk berths like Lascelles.
 _PV_FUEL_BERTHS = {
-    "gellibrand", "holden", "maribyrnong", "esso", "bp berth",
+    "gellibrand",       # ExxonMobil/Mobil fuel import terminal (Melbourne)
+    "holden dock",      # Oil terminal (Melbourne)
+    "maribyrnong",      # Chemical/product tanker berth (Melbourne)
+    "victoria dock",    # LPG tankers (Melbourne)
+    "geelong refinery", # Viva Energy crude/products (Geelong)
+    "refinery pier",    # Viva Energy (Geelong PowerApps uses this name)
+    "esso",
+    "bp berth",
 }
 
 
@@ -761,6 +769,12 @@ def _parse_ports_victoria(html: str) -> list[dict]:
                 berth = to_loc if current_movement == "Arrival" else from_loc
                 port = _pv_port_from_berth(berth)
                 in_port = ""
+
+            # Supplement type detection with berth name for arrivals/in-port
+            # (not all tankers carry a (T) suffix on the Ports Victoria page)
+            relevant_berth = to_loc if not is_inport else cell_map.get("Berth", "")
+            if not vessel_type and any(k in relevant_berth.lower() for k in _PV_FUEL_BERTHS):
+                vessel_type = "Tanker"
 
             rows.append({
                 "port": port,

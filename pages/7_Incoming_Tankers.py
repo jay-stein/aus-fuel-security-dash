@@ -25,7 +25,15 @@ st.caption(
     "Volume estimates flagged as **High** (from cargo tonnage) or **Rough** (from vessel length)."
 )
 
-with st.spinner("Scraping vessel movements from port authorities..."):
+_col_refresh, _col_gap = st.columns([1, 5])
+with _col_refresh:
+    if st.button("🔄 Refresh", use_container_width=True):
+        from pathlib import Path
+        Path("data/port_schedule.json").unlink(missing_ok=True)
+        _cached_scrape_all.clear()
+        st.rerun()
+
+with st.spinner("Loading vessel movements..."):
     all_vessels = _cached_scrape_all(tankers_only=True)
 
 if len(all_vessels) == 0:
