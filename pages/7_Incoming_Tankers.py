@@ -1,13 +1,43 @@
 """Incoming Tankers — live tanker movements scraped from Australian port authorities."""
 
+import json
 import streamlit as st
 import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+from pathlib import Path
 
-from port_scraper import scrape_all_ports, COUNTRY_COORDS, AU_PORT_COORDS
+from port_scraper import scrape_all_ports, COUNTRY_COORDS, AU_PORT_COORDS, FROM_PORT_COORDS
 from vessel_lookup import VesselCache
+from ais_tracker import voyage_progress as _voyage_progress
+
+
+def _load_shipnext_cache() -> dict[str, dict]:
+    """Load cached ShipNext positions from file.
+
+    Returns dict mapping IMO → {"lat", "lon", "cached_at", "ais_updated_at"}.
+    """
+    cache_file = Path("data/shipnext_positions.json")
+    if not cache_file.exists():
+        return {}
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        result = {}
+        for key, entry in data.items():
+            if key.startswith("imo_") and "position" in entry:
+                imo = key.replace("imo_", "")
+                pos = entry["position"]
+                if isinstance(pos, (list, tuple)) and len(pos) == 2:
+                    result[imo] = {
+                        "lat": pos[0],
+                        "lon": pos[1],
+                        "cached_at": entry.get("cached_at"),
+                        "ais_updated_at": entry.get("ais_updated_at"),
+                    }
+        return result
+    except Exception:
+        return {}
 
 
 @st.cache_data(ttl=3 * 3600, show_spinner=False)
@@ -250,6 +280,111 @@ else:
         arrivals.sort("eta_days", nulls_last=True)
         .unique(subset=["vessel"], keep="first")
     )
+
+    # Voyage progress (International vessels with future ETA only)
+    _prog_pct: list[float | None] = []
+    _prog_dist: list[float | None] = []
+    _prog_lat: list[float | None] = []
+    _prog_lon: list[float | None] = []
+    for _row in arrivals.iter_rows(named=True):
+        _pct = None
+        _dist = None
+        _clat = None
+        _clon = None
+        if (
+            _row.get("origin_type") == "International"
+            and _row.get("origin_country")
+            and _row.get("eta_days") is not None
+            and _row["eta_days"] > 0
+        ):
+            # Use port-level coords if available, fall back to country centroid
+            _from_loc = (_row.get("from_location") or "").lower().strip()
+            _orig = (
+                FROM_PORT_COORDS.get(_from_loc)
+                or COUNTRY_COORDS.get(_row["origin_country"])
+            )
+            _dest = AU_PORT_COORDS.get((_row["port"] or "").lower())
+            if _orig and _dest:
+                try:
+                    _prog = _voyage_progress(
+                        _orig[0], _orig[1],
+                        (_row["port"] or "").lower(), _dest[0], _dest[1],
+                        _row["eta_days"] * 24,
+                    )
+                    _pct = round(_prog["pct_complete"], 1)
+                    _dist = round(_prog["dist_remaining_nm"], 0)
+                    _clat = _prog["current_lat"]
+                    _clon = _prog["current_lon"]
+                except Exception:
+                    pass
+        _prog_pct.append(_pct)
+        _prog_dist.append(_dist)
+        _prog_lat.append(_clat)
+        _prog_lon.append(_clon)
+    arrivals = arrivals.with_columns([
+        pl.Series("pct_complete", _prog_pct, dtype=pl.Float64),
+        pl.Series("dist_remaining_nm", _prog_dist, dtype=pl.Float64),
+        pl.Series("_est_lat", _prog_lat, dtype=pl.Float64),
+        pl.Series("_est_lon", _prog_lon, dtype=pl.Float64),
+    ])
+
+    # Build per-vessel link columns:
+    #   vessel_url  — vessel name rendered as a clickable link to MarineTraffic
+    #   map_url     — 🗺️ icon linking to Google Maps at estimated position or ShipNext live pos
+
+    # Load cached ShipNext positions once
+    _shipnext_cache = _load_shipnext_cache()
+
+    _vessel_urls: list[str] = []
+    _map_urls: list[str] = []
+    for _row in arrivals.iter_rows(named=True):
+        _name = (_row.get("vessel") or "Unknown").strip()
+        _imo  = (_row.get("v_imo") or "").strip()
+
+        # Vessel name → MarineTraffic (hash fragment encodes name for display_text regex)
+        if _imo:
+            _vessel_urls.append(
+                f"https://www.marinetraffic.com/en/ais/details/ships/imo:{_imo}#{_name}"
+            )
+        else:
+            _vessel_urls.append(
+                f"https://www.marinetraffic.com/en/search?name={_name}#{_name}"
+            )
+
+        # Map icon → Google Maps at live ShipNext position, or fall back to dead-reckoned
+        _map_url = ""
+        _lat = None
+        _lon = None
+        _is_live = False
+
+        # Try to use cached ShipNext position
+        if _imo and _imo in _shipnext_cache:
+            _sn = _shipnext_cache[_imo]
+            _lat, _lon = _sn["lat"], _sn["lon"]
+            _is_live = True
+
+        # Fall back to dead-reckoned estimated position
+        if _lat is None:
+            _lat = _row.get("_est_lat")
+            _lon = _row.get("_est_lon")
+
+        # Fall back to destination port
+        if _lat is None:
+            _port_c = AU_PORT_COORDS.get((_row.get("port") or "").lower())
+            if _port_c:
+                _lat, _lon = _port_c[0], _port_c[1]
+
+        # Build map URL (z=3 shows ~1200+ km width, ultra-wide ocean context)
+        if _lat is not None and _lon is not None:
+            zoom = 3  # Ultra-wide regional view — see 1000+ km
+            _map_url = f"https://www.google.com/maps?q={_lat:.4f},{_lon:.4f}&z={zoom}"
+
+        _map_urls.append(_map_url)
+
+    arrivals = arrivals.with_columns([
+        pl.Series("vessel_url", _vessel_urls, dtype=pl.String),
+        pl.Series("map_url", _map_urls, dtype=pl.String),
+    ])
 
     # Trade direction icons
     _TRADE_DIR_ICON = {
@@ -498,9 +633,10 @@ else:
 
     # Main table
     table_cols = [
-        "vessel", "trade_dir_icon", "ship_type_detail", "cargo_category",
+        "map_url", "vessel_url", "trade_dir_icon", "ship_type_detail", "cargo_category",
         "flag_img", "v_flag", "v_gt", "v_dwt",
-        "port", "state", "eta", "eta_days", "origin_country", "origin_detail",
+        "port", "state", "eta", "eta_days", "pct_complete", "dist_remaining_nm",
+        "origin_country", "origin_detail",
         "v_imo", "v_year_built", "v_length_m", "v_beam_m",
         "est_volume_ml", "est_kbbl", "est_confidence", "from_location",
     ]
@@ -509,8 +645,10 @@ else:
         display_df.select([c for c in table_cols if c in display_df.columns]).to_pandas(),
         use_container_width=True,
         height=500,
+        hide_index=True,
         column_config={
-            "vessel": "Vessel",
+            "map_url": st.column_config.LinkColumn("🗺️", display_text="🗺️", width="small"),
+            "vessel_url": st.column_config.LinkColumn("Vessel", display_text=r"#(.+)$"),
             "trade_dir_icon": "Direction",
             "ship_type_detail": "Ship Type",
             "cargo_category": "Category",
@@ -521,6 +659,8 @@ else:
             "port": "Port", "state": "State",
             "eta": "ETA",
             "eta_days": st.column_config.NumberColumn("Days", format="%.1f"),
+            "pct_complete": st.column_config.ProgressColumn("Progress", min_value=0, max_value=100, format="%.0f%%"),
+            "dist_remaining_nm": st.column_config.NumberColumn("Dist. left (nm)", format="%.0f"),
             "origin_country": "Country", "origin_detail": "From (detail)",
             "v_imo": "IMO", "v_year_built": "Built",
             "v_length_m": st.column_config.ProgressColumn("Length (m)", min_value=0, max_value=max_length, format="%.0f"),

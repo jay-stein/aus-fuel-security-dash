@@ -41,6 +41,93 @@ st.info(
 
 st.divider()
 
+# ── Precision Shipping Positions (ShipNext) ───────────────────
+st.subheader("🗺️ Precision Shipping Positions")
+st.caption(
+    "Fetch live vessel positions from ShipNext.com using real browser rendering. "
+    "Each vessel takes ~5–10 seconds. With 50+ tankers, this can take 1+ hour. "
+    "Results are cached for 5 minutes."
+)
+
+col_load, col_info = st.columns([1, 4])
+with col_load:
+    load_positions = st.button("⚡ Load All Positions", use_container_width=True)
+
+with col_info:
+    st.caption("Caches results to `data/shipnext_positions.json`")
+
+if load_positions:
+    from port_scraper import scrape_all_ports
+    from vessel_lookup import VesselCache
+    from shipnext_scraper import fetch_all_vessel_positions
+
+    with st.spinner("Fetching port schedule and enriching vessel specs..."):
+        try:
+            port_df = scrape_all_ports(tankers_only=True)
+            if port_df is None or len(port_df) == 0:
+                st.error("Port scraper returned no data.")
+                vessels = []
+            else:
+                # Enrich with vessel specs (IMO, GT, DWT, etc.)
+                cache = VesselCache()
+                port_df = cache.enrich_dataframe(port_df)
+                vessels = [dict(row) for row in port_df.iter_rows(named=True)]
+        except Exception as e:
+            st.error(f"Failed to load port data: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+            vessels = []
+
+    st.info(f"Port schedule returned {len(vessels)} total vessels (all types).")
+
+    if vessels:
+        # Debug: show what columns we have
+        first_vessel = vessels[0]
+        st.caption(f"Available fields: {', '.join(first_vessel.keys())}")
+
+        with_imo = [v for v in vessels if (v.get("v_imo") or "").strip()]
+        st.info(f"**{len(with_imo)} vessels with IMO numbers.** Starting fetch...")
+
+        if with_imo:
+            progress_bar = st.progress(0, text="Starting...")
+            status_text = st.empty()
+
+            def _progress(i, total, name):
+                pct = (i + 1) / total
+                progress_bar.progress(pct, text=f"{i + 1}/{total} · {name}")
+                status_text.text(f"⏳ Fetching position for {name}...")
+
+            results, errors = fetch_all_vessel_positions(with_imo, progress_callback=_progress)
+
+            progress_bar.progress(1.0, text="✅ Complete!")
+            status_text.text("")
+
+            st.success(
+                f"✅ **{len(results)} vessel positions loaded** "
+                f"({len(errors)} failed to fetch). "
+                f"Saved to `data/shipnext_positions.json` — now live on Incoming Tankers & Tanker Tracker pages."
+            )
+
+            # Show loaded vessels
+            if results:
+                with st.expander(f"✅ Loaded positions ({len(results)})"):
+                    for imo, (lat, lon) in sorted(results.items()):
+                        st.text(f"IMO {imo}: {lat:.4f}°, {lon:.4f}°")
+
+            # Show errors
+            if errors:
+                with st.expander(f"⚠️ Failed fetches ({len(errors)})"):
+                    for imo, name, reason in errors[:20]:  # Show first 20
+                        st.text(f"**{name}** (IMO {imo}): {reason}")
+                    if len(errors) > 20:
+                        st.text(f"... and {len(errors) - 20} more")
+        else:
+            st.warning("No vessels with IMO numbers in the scraped data.")
+    else:
+        st.error("Port scraper returned empty list.")
+
+st.divider()
+
 
 # ── Helpers ───────────────────────────────────────────────────
 

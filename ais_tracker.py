@@ -623,6 +623,73 @@ def estimate_position_on_route(
     return waypoints[0][0], waypoints[0][1]
 
 
+def voyage_progress(
+    origin_lat: float, origin_lon: float,
+    dest_port: str, dest_lat: float, dest_lon: float,
+    hours_to_go: float,
+    avg_speed_knots: float = 14.0,
+) -> dict:
+    """Return voyage progress metrics for a vessel with a known ETA.
+
+    Uses the same dead-reckoning logic as estimate_position_on_route(), but
+    also computes the total route distance and percentage complete.
+
+    Returns dict with:
+      current_lat, current_lon  — dead-reckoned position
+      dist_remaining_nm         — nautical miles remaining
+      dist_total_nm             — total route distance in nm
+      pct_complete              — 0–100 float (clamped)
+    """
+    dist_remaining = max(hours_to_go * avg_speed_knots, 0.0)
+    waypoints = get_route_waypoints(origin_lat, origin_lon, dest_port, dest_lat, dest_lon)
+
+    if len(waypoints) < 2:
+        return {
+            "current_lat": origin_lat, "current_lon": origin_lon,
+            "dist_remaining_nm": dist_remaining, "dist_total_nm": dist_remaining,
+            "pct_complete": 0.0,
+        }
+
+    # Total route length
+    total_nm = sum(
+        haversine_nm(waypoints[i][0], waypoints[i][1], waypoints[i + 1][0], waypoints[i + 1][1])
+        for i in range(len(waypoints) - 1)
+    )
+    if total_nm <= 0:
+        return {
+            "current_lat": origin_lat, "current_lon": origin_lon,
+            "dist_remaining_nm": 0.0, "dist_total_nm": 0.0,
+            "pct_complete": 100.0,
+        }
+
+    dist_sailed = max(total_nm - dist_remaining, 0.0)
+    pct = min(dist_sailed / total_nm * 100.0, 100.0)
+
+    # Walk backwards from destination to find current position
+    remaining = dist_remaining
+    cur_lat, cur_lon = waypoints[0][0], waypoints[0][1]
+    for i in range(len(waypoints) - 1, 0, -1):
+        seg_lat1, seg_lon1 = waypoints[i - 1]
+        seg_lat2, seg_lon2 = waypoints[i]
+        seg_dist = haversine_nm(seg_lat1, seg_lon1, seg_lat2, seg_lon2)
+        if seg_dist <= 0:
+            continue
+        if remaining <= seg_dist:
+            frac = remaining / seg_dist
+            cur_lat = seg_lat2 + frac * (seg_lat1 - seg_lat2)
+            cur_lon = seg_lon2 + frac * (seg_lon1 - seg_lon2)
+            break
+        remaining -= seg_dist
+
+    return {
+        "current_lat": cur_lat,
+        "current_lon": cur_lon,
+        "dist_remaining_nm": round(dist_remaining, 0),
+        "dist_total_nm": round(total_nm, 0),
+        "pct_complete": round(pct, 1),
+    }
+
+
 # ── AIS WebSocket snapshot ─────────────────────────────────────
 
 def _parse_ais_timestamp_age(ts_str: str) -> float | None:

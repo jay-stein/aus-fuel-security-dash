@@ -1,6 +1,10 @@
 """Scrape vessel movements from Australian port authority websites."""
 
+import logging
 import re
+import time
+import functools
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 
@@ -10,6 +14,32 @@ from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
 import polars as pl
+
+log = logging.getLogger(__name__)
+
+
+def _retry(max_attempts: int = 3, backoff_base: float = 2.0):
+    """Decorator: retry a scraper function with exponential backoff.
+
+    Retries on any exception. Logs each retry attempt.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(max_attempts):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < max_attempts - 1:
+                        delay = backoff_base ** attempt  # 1s, 2s, 4s …
+                        log.warning("%s attempt %d failed: %s. Retrying in %.0fs...",
+                                    fn.__name__, attempt + 1, exc, delay)
+                        time.sleep(delay)
+            raise last_exc  # type: ignore[misc]
+        return wrapper
+    return decorator
 
 
 TANKER_KEYWORDS = [
@@ -76,8 +106,16 @@ AU_LOCATIONS = {
     "amrun", "aurukun", "green island", "horn island", "boigu island",
     "kubin island", "murray island", "seisia", "skardon river",
     "warraber island", "willis island", "yorke island", "yorkeys knob",
+    "port douglas", "tangalooma", "palm island", "mabuiag island",
     # TAS
     "devonport", "hobart", "bell bay", "launceston",
+    "grassy", "lady barron", "bridport", "stanley", "port arthur",
+    "port latta", "burnie",
+    # SA (additional)
+    "ardrossan", "klein point", "thevenard", "wallaroo", "port bonython",
+    "port pirie",
+    # VIC (additional)
+    "welshpool", "crib point", "long island point",
     # Generic
     "outside port limits",
 }
@@ -109,10 +147,19 @@ AU_STATE_MAP = {
     "boigu island": "QLD", "kubin island": "QLD", "murray island": "QLD",
     "seisia": "QLD", "skardon river": "QLD", "warraber island": "QLD",
     "willis island": "QLD", "yorke island": "QLD", "yorkeys knob": "QLD",
+    "port douglas": "QLD", "tangalooma": "QLD", "palm island": "QLD",
+    "mabuiag island": "QLD",
     # TAS
     "devonport": "TAS", "hobart": "TAS", "bell bay": "TAS", "launceston": "TAS",
+    "grassy": "TAS", "lady barron": "TAS", "bridport": "TAS", "stanley": "TAS",
+    "port arthur": "TAS", "port latta": "TAS", "burnie": "TAS",
+    # SA — additional
+    "ardrossan": "SA", "klein point": "SA", "thevenard": "SA",
+    "wallaroo": "SA", "port bonython": "SA", "port pirie": "SA",
     # VIC — additional locations
     "westernport": "VIC", "western port": "VIC",  # Port of Hastings area
+    "welshpool": "VIC", "crib point": "VIC",
+    "long island point": "VIC",
 }
 
 # Berth / wharf names within NSW ports — these are internal locations, not origins
@@ -151,6 +198,9 @@ PORT_COUNTRY_MAP = {
     "tobata": "Japan", "kitakyushu": "Japan", "tokuyama": "Japan",
     "tokuyamakudamatsu": "Japan", "tomakomai": "Japan", "tonda": "Japan",
     "tsukumi": "Japan", "ube": "Japan",
+    "hirohata": "Japan", "wakayama": "Japan", "kashima": "Japan",
+    "ibaraki": "Japan", "kinuura": "Japan", "kimitsu": "Japan",
+    "ishikawa": "Japan", "noshiro": "Japan",
     # ── China ───────────────────────────────────────────────────
     "shanghai": "China", "ningbo": "China", "qingdao": "China", "dalian": "China",
     "tianjin": "China", "zhanjiang": "China", "zhoushan": "China", "maoming": "China",
@@ -165,9 +215,12 @@ PORT_COUNTRY_MAP = {
     "shekou": "China", "taicang": "China", "taizhou": "China",
     "yangjiang": "China", "yantai": "China", "yantian": "China",
     "zhenjiang": "China", "china": "China",
+    "huaiyin": "China", "beilun": "China", "huanghua": "China",
+    "zhangzhou": "China", "zhangjiagang": "China", "xiamen": "China",
+    "baoshanmatou": "China", "guangzhou": "China",
     # ── Taiwan ──────────────────────────────────────────────────
     "kaohsiung": "Taiwan", "mailiao": "Taiwan", "mai-liao": "Taiwan",
-    "taichung": "Taiwan",
+    "taichung": "Taiwan", "taipei": "Taiwan",
     # ── Singapore ───────────────────────────────────────────────
     "singapore": "Singapore", "jurong": "Singapore", "pulau bukom": "Singapore",
     # ── Malaysia ────────────────────────────────────────────────
@@ -180,21 +233,22 @@ PORT_COUNTRY_MAP = {
     # ── Thailand ────────────────────────────────────────────────
     "bangkok": "Thailand", "si racha": "Thailand", "sriracha": "Thailand",
     "map ta phut": "Thailand", "laem chabang": "Thailand",
-    "koh sichang": "Thailand",
+    "koh sichang": "Thailand", "rayong": "Thailand",
     # ── Vietnam ─────────────────────────────────────────────────
     "ho chi minh": "Vietnam", "vung tau": "Vietnam", "dung quat": "Vietnam",
     "phu my": "Vietnam", "phu-my": "Vietnam", "hongai": "Vietnam",
+    "cai lan": "Vietnam",
     # ── Indonesia ───────────────────────────────────────────────
     "batam": "Indonesia", "balikpapan": "Indonesia", "cilacap": "Indonesia",
     "dumai": "Indonesia", "merak": "Indonesia", "tuban": "Indonesia",
     "bahudopi": "Indonesia", "jakarta": "Indonesia", "surabaya": "Indonesia",
     "sekupang": "Indonesia", "bontang": "Indonesia", "obi island": "Indonesia",
     "amamapare": "Indonesia", "adang bay": "Indonesia",
-    "indonesia": "Indonesia",
+    "indonesia": "Indonesia", "gresik": "Indonesia", "sipitang": "Indonesia",
     # ── Philippines ─────────────────────────────────────────────
     "manila": "Philippines", "batangas": "Philippines", "bauan": "Philippines",
     "subic": "Philippines", "general santos": "Philippines",
-    "philippines": "Philippines",
+    "philippines": "Philippines", "mariveles": "Philippines", "cebu": "Philippines",
     # ── South Asia ──────────────────────────────────────────────
     "mumbai": "India", "jamnagar": "India", "kochi": "India", "cochin": "India",
     "chennai": "India", "mangalore": "India", "paradip": "India",
@@ -217,16 +271,16 @@ PORT_COUNTRY_MAP = {
     "cape town": "South Africa", "port elizabeth": "South Africa",
     "mombasa": "Kenya", "dar es salaam": "Tanzania",
     "luanda": "Angola", "bonny": "Nigeria", "lagos": "Nigeria",
-    "port louis": "Mauritius",
+    "port louis": "Mauritius", "suez": "Egypt",
     # ── Europe ──────────────────────────────────────────────────
     "rotterdam": "Netherlands", "antwerp": "Belgium", "hamburg": "Germany",
     "le havre": "France", "marseille": "France",
     "milford haven": "UK", "southampton": "UK", "fawley": "UK",
     # ── Americas ────────────────────────────────────────────────
     "houston": "USA", "corpus christi": "USA", "beaumont": "USA",
-    "long beach": "USA", "los angeles": "USA",
+    "long beach": "USA", "los angeles": "USA", "san diego": "USA",
     "punto fijo": "Venezuela", "jose": "Venezuela",
-    "rodman": "Panama",
+    "rodman": "Panama", "callao": "Peru",
     # ── Pacific ─────────────────────────────────────────────────
     "noumea": "New Caledonia", "suva": "Fiji", "lautoka": "Fiji",
     "apia": "Samoa", "nuku'alofa": "Tonga",
@@ -234,11 +288,16 @@ PORT_COUNTRY_MAP = {
     "motukea": "Papua New Guinea", "lihir island": "Papua New Guinea",
     "papua new guinea": "Papua New Guinea",
     "honiara": "Solomon Islands", "guadalcanal": "Solomon Islands",
-    "mystery island": "Vanuatu",
+    "mystery island": "Vanuatu", "port vila": "Vanuatu",
     # ── New Zealand ─────────────────────────────────────────────
     "auckland": "New Zealand", "wellington": "New Zealand",
     "tauranga": "New Zealand", "marsden point": "New Zealand",
-    "dunedin": "New Zealand",
+    "dunedin": "New Zealand", "bluff": "New Zealand",
+    "lyttelton": "New Zealand", "napier": "New Zealand",
+    "new plymouth": "New Zealand", "whangarei": "New Zealand",
+    "timaru": "New Zealand", "gisborne": "New Zealand",
+    "nelson": "New Zealand", "picton": "New Zealand",
+    "new zealand": "New Zealand",
     # ── East Timor ──────────────────────────────────────────────
     "dili": "East Timor",
     # ── Hong Kong ───────────────────────────────────────────────
@@ -286,6 +345,8 @@ COUNTRY_COORDS: dict[str, tuple[float, float]] = {
     "USA": (37.09, -95.71),
     "Venezuela": (6.42, -66.59),
     "Panama": (8.54, -80.78),
+    "Peru": (-9.19, -75.02),
+    "Egypt": (26.82, 30.80),
     "New Caledonia": (-20.90, 165.62),
     "Fiji": (-17.71, 178.07),
     "Samoa": (-13.76, -172.10),
@@ -298,6 +359,100 @@ COUNTRY_COORDS: dict[str, tuple[float, float]] = {
     "Hong Kong": (22.40, 114.11),
     "Antarctica": (-75.25, 0.07),
     "Australia": (-25.27, 133.78),
+}
+
+# Precise coordinates for common international departure ports.
+# Keyed by the `from_location` value (lowercase). Used as a more accurate
+# origin source than COUNTRY_COORDS country centroids.
+FROM_PORT_COORDS: dict[str, tuple[float, float]] = {
+    # Singapore / Malaysia
+    "singapore":      (1.26,  103.82),
+    "port klang":     (3.00,  101.40),
+    "klang":          (3.00,  101.40),
+    "pengerang":      (1.37,  104.11),
+    "melaka":         (2.19,  102.25),
+    "johor":          (1.46,  103.76),
+    "johor bahru":    (1.46,  103.76),
+    # South Korea
+    "busan":          (35.10, 129.04),
+    "ulsan":          (35.53, 129.41),
+    "yeosu":          (34.76, 127.66),
+    "daesan":         (37.00, 126.35),
+    "pyongtaek":      (36.96, 126.86),
+    "incheon":        (37.46, 126.61),
+    # Japan
+    "yokohama":       (35.45, 139.64),
+    "chiba":          (35.57, 140.09),
+    "kawasaki":       (35.52, 139.74),
+    "osaka":          (34.65, 135.43),
+    "nagoya":         (35.06, 136.88),
+    "tomakomai":      (42.64, 141.61),
+    "mizushima":      (34.52, 133.78),
+    "shibushi":       (31.47, 131.10),
+    "kobe":           (34.69, 135.20),
+    "sakai":          (34.57, 135.46),
+    "wakayama":       (34.23, 135.17),
+    # China
+    "shanghai":       (30.63, 121.97),
+    "ningbo":         (29.87, 121.55),
+    "zhoushan":       (29.99, 122.20),
+    "tianjin":        (38.99, 117.72),
+    "qingdao":        (36.07, 120.38),
+    "dalian":         (38.91, 121.64),
+    "guangzhou":      (22.50, 113.53),
+    "zhanjiang":      (21.18, 110.40),
+    "nanjing":        (32.10, 118.80),
+    "wenzhou":        (28.00, 120.72),
+    # Taiwan
+    "kaohsiung":      (22.62, 120.28),
+    "taichung":       (24.27, 120.54),
+    # Middle East
+    "ras tanura":     (26.63,  50.16),
+    "jubail":         (27.01,  49.66),
+    "jeddah":         (21.49,  39.19),
+    "fujairah":       (25.12,  56.34),
+    "ruwais":         (24.11,  52.73),
+    "salalah":        (16.94,  54.00),
+    "muscat":         (23.62,  58.59),
+    "sohar":          (24.35,  56.62),
+    "mesaieed":       (24.99,  51.56),
+    "ras laffan":     (25.93,  51.57),
+    # India
+    "mumbai":         (18.93,  72.85),
+    "kandla":         (23.03,  70.22),
+    "paradip":        (20.26,  86.66),
+    "vizag":          (17.69,  83.28),
+    "visakhapatnam":  (17.69,  83.28),
+    "chennai":        (13.08,  80.29),
+    # Indonesia
+    "balikpapan":     (-1.27, 116.83),
+    "bontang":        (0.14,  117.50),
+    "merak":          (-5.93, 106.02),
+    "cilacap":        (-7.73, 109.02),
+    "dumai":          (1.67,  101.44),
+    "sorong":         (-0.88, 131.26),
+    # USA (Gulf)
+    "houston":        (29.74,  -95.02),
+    "new orleans":    (29.94,  -90.07),
+    # South Africa
+    "durban":         (-29.87,  31.02),
+    "cape town":      (-33.91,  18.42),
+    # New Zealand
+    "auckland":       (-36.84, 174.77),
+    "marsden point":  (-35.83, 174.50),
+    "tauranga":       (-37.65, 176.17),
+    # Thailand
+    "map ta phut":    (12.67,  101.18),
+    "laem chabang":   (13.09,  100.88),
+    "sriracha":       (13.15,  100.92),
+    # Vietnam
+    "vung tau":       (10.35,  107.08),
+    "ho chi minh":    (10.78,  106.70),
+    "hai phong":      (20.86,  106.68),
+    # Philippines
+    "batangas":       (13.76,  121.06),
+    "manila":         (14.58,  120.97),
+    "subic bay":      (14.81,  120.27),
 }
 
 # Australian port/city coordinates for domestic bubble map
@@ -414,14 +569,14 @@ def _normalise_date(val: str) -> str:
 
 
 def _lookup_country(port_name: str) -> str:
-    """Look up country for a port name. Returns country or the original name."""
+    """Look up country for a port name. Returns a known country name or 'Unknown'."""
     if not port_name:
         return ""
     lower = port_name.lower().strip()
     for key, country in PORT_COUNTRY_MAP.items():
         if key in lower:
             return country
-    return port_name
+    return "Unknown"
 
 
 def _load_vessel_cache() -> dict:
@@ -614,6 +769,7 @@ def _parse_nsw_table(html: str, port: PortConfig) -> list[dict]:
     return rows
 
 
+@_retry()
 def scrape_nsw_ports() -> list[dict]:
     all_rows = []
     with httpx.Client(headers=HEADERS, timeout=30, follow_redirects=True) as client:
@@ -624,11 +780,33 @@ def scrape_nsw_ports() -> list[dict]:
                 raw = _parse_nsw_table(resp.text, port)
                 all_rows.extend(raw)
             except Exception as e:
-                print(f"Warning: Failed to scrape {port.name}: {e}")
+                log.warning("Failed to scrape %s: %s", port.name, e)
     return all_rows
 
 
 # ─── Geelong (VIC) ────────────────────────────────────────────
+
+
+# Header names we look for in the Geelong PowerApps table.
+# Mapping: normalised header substring → semantic key.
+_GEELONG_HEADER_MAP = {
+    "vessel": "vessel",
+    "eta": "eta",
+    "cargo": "cargo",
+    "tonnage": "tonnage",
+    "length": "length",
+    "loa": "length",
+    "agent": "agent",
+    "customer": "customer",
+    "company": "customer",
+}
+
+# Fallback positional indices (last known column layout as of Apr 2026).
+# Only used when <thead> is missing or unrecognisable.
+_GEELONG_FALLBACK_INDICES = {
+    "vessel": 0, "eta": 1, "cargo": 7, "tonnage": 8,
+    "length": 9, "agent": 11, "customer": 12,
+}
 
 
 def _parse_geelong_table(html: str) -> list[dict]:
@@ -636,6 +814,27 @@ def _parse_geelong_table(html: str) -> list[dict]:
     table = soup.find("table", id="shipping")
     if not table:
         return []
+
+    # Build header-based column index map (resilient to column reordering)
+    col_map: dict[str, int] = {}
+    thead = table.find("thead") or table.find("tr")
+    if thead:
+        for idx, th in enumerate(thead.find_all(["th", "td"])):
+            hdr = th.get_text(strip=True).lower()
+            for key, sem in _GEELONG_HEADER_MAP.items():
+                if key in hdr and sem not in col_map:
+                    col_map[sem] = idx
+
+    # Fall back to hardcoded indices if we couldn't map the critical columns
+    if "vessel" not in col_map or "cargo" not in col_map:
+        log.warning("Geelong table headers not recognised, using fallback indices")
+        col_map = dict(_GEELONG_FALLBACK_INDICES)
+
+    def _cell(cells, key: str) -> str:
+        idx = col_map.get(key)
+        if idx is not None and idx < len(cells):
+            return cells[idx].get_text(strip=True)
+        return ""
 
     rows = []
     current_berth = ""
@@ -647,19 +846,19 @@ def _parse_geelong_table(html: str) -> list[dict]:
             continue
 
         cells = tr.find_all("td")
-        if len(cells) < 8:
+        if len(cells) < 4:
             continue
 
-        vessel = cells[0].get_text(strip=True)
+        vessel = _cell(cells, "vessel")
         if not vessel:
             continue
 
-        eta = tr.get("data-eta", cells[1].get_text(strip=True))
-        cargo_type = cells[7].get_text(strip=True) if len(cells) > 7 else ""
-        tonnage_str = cells[8].get_text(strip=True) if len(cells) > 8 else ""
-        length_str = cells[9].get_text(strip=True) if len(cells) > 9 else ""
-        agent = cells[11].get_text(strip=True) if len(cells) > 11 else ""
-        customer = cells[12].get_text(strip=True) if len(cells) > 12 else ""
+        eta = tr.get("data-eta", _cell(cells, "eta"))
+        cargo_type = _cell(cells, "cargo")
+        tonnage_str = _cell(cells, "tonnage")
+        length_str = _cell(cells, "length")
+        agent = _cell(cells, "agent")
+        customer = _cell(cells, "customer")
 
         tonnage = float(tonnage_str) if tonnage_str.replace(".", "").isdigit() else None
         length_m = float(length_str) if length_str.replace(".", "").isdigit() else None
@@ -683,15 +882,22 @@ def _parse_geelong_table(html: str) -> list[dict]:
     return rows
 
 
+@_retry()
 def scrape_geelong() -> list[dict]:
     url = "https://geelongport.powerappsportals.com/Shipping/"
     try:
         with httpx.Client(headers=HEADERS, timeout=30, follow_redirects=True) as client:
             resp = client.get(url)
             resp.raise_for_status()
+            if 'id="shipping"' not in resp.text and "id='shipping'" not in resp.text:
+                log.warning(
+                    "Geelong page missing expected #shipping table "
+                    "(status=%d, len=%d)", resp.status_code, len(resp.text)
+                )
+                return []
             return _parse_geelong_table(resp.text)
     except Exception as e:
-        print(f"Warning: Failed to scrape Geelong: {e}")
+        log.warning("Failed to scrape Geelong: %s", e)
         return []
 
 
@@ -852,6 +1058,7 @@ def _parse_ports_victoria(html: str) -> list[dict]:
     return rows
 
 
+@_retry()
 def scrape_ports_victoria() -> list[dict]:
     """Scrape vessel movements from Ports Victoria (Melbourne + Geelong).
 
@@ -862,13 +1069,27 @@ def scrape_ports_victoria() -> list[dict]:
     as well as Geelong Refinery berths.
     """
     url = "https://ports.vic.gov.au/marine-operations/ship-movements/"
-    with httpx.Client(headers=HEADERS, timeout=30, follow_redirects=True) as client:
-        resp = client.get(url)
-        resp.raise_for_status()
-        return _parse_ports_victoria(resp.text)
+    try:
+        with httpx.Client(headers=HEADERS, timeout=30, follow_redirects=True) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            return _parse_ports_victoria(resp.text)
+    except Exception as e:
+        log.warning("Failed to scrape Ports Victoria: %s", e)
+        return []
 
 
 # ─── Generic PortControl API helpers ──────────────────────────
+
+
+# Regex patterns for extracting the PortControl __stamp token.
+# Multiple patterns for resilience against formatting changes (minification, quoting).
+_STAMP_PATTERNS = [
+    re.compile(r"__stamp\s*=\s*'([^']+)'"),       # __stamp = 'xxx'
+    re.compile(r'__stamp\s*=\s*"([^"]+)"'),        # __stamp = "xxx"
+    re.compile(r"__stamp\s*=\s*`([^`]+)`"),        # __stamp = `xxx`  (template literal)
+    re.compile(r"stamp[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']"),  # stamp: "xxx" or stamp="xxx"
+]
 
 
 def _portcontrol_get_session(
@@ -877,10 +1098,24 @@ def _portcontrol_get_session(
     """Get a PortControl/WebX session with stamp."""
     client = httpx.Client(headers=HEADERS, timeout=15, follow_redirects=True)
     resp = client.get(f"{base_url}/")
-    m = re.search(r"__stamp = '([^']+)'", resp.text)
-    if not m:
-        raise RuntimeError(f"Could not extract stamp from {base_url}")
-    stamp = m.group(1) + "\x0b" + caller_path
+
+    stamp_value = None
+    for pattern in _STAMP_PATTERNS:
+        m = pattern.search(resp.text)
+        if m:
+            stamp_value = m.group(1)
+            break
+
+    if not stamp_value:
+        # Log diagnostic info so the regex can be updated quickly
+        preview = resp.text[:500].replace("\n", " ")
+        raise RuntimeError(
+            f"Could not extract stamp from {base_url} "
+            f"(status={resp.status_code}, len={len(resp.text)}). "
+            f"Preview: {preview!r}"
+        )
+
+    stamp = stamp_value + "\x0b" + caller_path
     return client, stamp
 
 
@@ -935,12 +1170,13 @@ def _portcontrol_get_data(
 FREMANTLE_BASE = "https://www3.fremantleports.com.au/vtmis"
 
 
+@_retry()
 def scrape_fremantle() -> list[dict]:
     """Scrape vessel movements from Fremantle Ports VTMIS API."""
     try:
         client, stamp = _portcontrol_get_session(FREMANTLE_BASE, "fmp.public/main-view")
     except Exception as e:
-        print(f"Warning: Failed to get Fremantle session: {e}")
+        log.warning("Failed to get Fremantle session: %s", e)
         return []
 
     rows = []
@@ -973,7 +1209,7 @@ def scrape_fremantle() -> list[dict]:
                     "customer": "",
                 })
         except Exception as e:
-            print(f"Warning: Failed to fetch Fremantle {report_code}: {e}")
+            log.warning("Failed to fetch Fremantle %s: %s", report_code, e)
 
     return rows
 
@@ -1001,6 +1237,7 @@ JOB_TYPE_MAP = {
 }
 
 
+@_retry()
 def scrape_qships() -> list[dict]:
     """Scrape vessel movements from QShips (all QLD ports)."""
     try:
@@ -1026,45 +1263,48 @@ def scrape_qships() -> list[dict]:
 
         rows = []
         for row_data in table["Data"]:
-            mapped = dict(zip(cols, row_data))
-            ship_type = str(mapped.get("MSQ_SHIP_TYPE", ""))
-            job_code = str(mapped.get("JOB_TYPE_CODE", ""))
-            loa = mapped.get("LOA")
-            loa_float = float(loa) if loa else None
+            try:
+                mapped = dict(zip(cols, row_data))
+                ship_type = str(mapped.get("MSQ_SHIP_TYPE", ""))
+                job_code = str(mapped.get("JOB_TYPE_CODE", ""))
+                loa = mapped.get("LOA")
+                loa_float = float(loa) if loa else None
 
-            # Determine port from TO_LOCATION_NAME or use generic "QLD"
-            to_loc = str(mapped.get("TO_LOCATION_NAME", ""))
-            from_loc = str(mapped.get("FROM_LOCATION_NAME", ""))
+                # Determine port from TO_LOCATION_NAME or use generic "QLD"
+                to_loc = str(mapped.get("TO_LOCATION_NAME", ""))
+                from_loc = str(mapped.get("FROM_LOCATION_NAME", ""))
 
-            # Try to identify port from berth location names
-            port_name = "QLD Port"
-            for loc in [to_loc, from_loc]:
-                loc_lower = loc.lower()
-                for pid, pname in QLD_PORTS.items():
-                    if pname.lower() in loc_lower:
-                        port_name = pname
-                        break
+                # Try to identify port from berth location names
+                port_name = "QLD Port"
+                for loc in [to_loc, from_loc]:
+                    loc_lower = loc.lower()
+                    for pid, pname in QLD_PORTS.items():
+                        if pname.lower() in loc_lower:
+                            port_name = pname
+                            break
 
-            rows.append({
-                "port": port_name,
-                "state": "QLD",
-                "Vessel": mapped.get("VESSEL_NAME", ""),
-                "Date & Time": str(mapped.get("START_TIME", "")),
-                "ARR / DEP": JOB_TYPE_MAP.get(job_code, job_code),
-                "Vessel type": ship_type,
-                "Agent": mapped.get("AGENCY_NAME", ""),
-                "From": mapped.get("LASTPORT_NAME", ""),
-                "To": mapped.get("NEXTPORT_NAME", ""),
-                "In port": "",
-                "cargo_type": "",
-                "tonnage": None,
-                "length_m": loa_float,
-                "customer": "",
-            })
+                rows.append({
+                    "port": port_name,
+                    "state": "QLD",
+                    "Vessel": mapped.get("VESSEL_NAME", ""),
+                    "Date & Time": str(mapped.get("START_TIME", "")),
+                    "ARR / DEP": JOB_TYPE_MAP.get(job_code, job_code),
+                    "Vessel type": ship_type,
+                    "Agent": mapped.get("AGENCY_NAME", ""),
+                    "From": mapped.get("LASTPORT_NAME", ""),
+                    "To": mapped.get("NEXTPORT_NAME", ""),
+                    "In port": "",
+                    "cargo_type": "",
+                    "tonnage": None,
+                    "length_m": loa_float,
+                    "customer": "",
+                })
+            except Exception as row_exc:
+                log.warning("QShips skipping malformed row: %s", row_exc)
 
         return rows
     except Exception as e:
-        print(f"Warning: Failed to scrape QShips: {e}")
+        log.warning("Failed to scrape QShips: %s", e)
         return []
 
 
@@ -1074,12 +1314,13 @@ def scrape_qships() -> list[dict]:
 FLINDERS_BASE = "https://portmis.flindersports.com.au"
 
 
+@_retry()
 def scrape_flinders() -> list[dict]:
     """Scrape SA port movements from Flinders Ports PortControl API."""
     try:
         client, stamp = _portcontrol_get_session(FLINDERS_BASE, "fnt.public/main-view")
     except Exception as e:
-        print(f"Warning: Failed to get Flinders Ports session: {e}")
+        log.warning("Failed to get Flinders Ports session: %s", e)
         return []
 
     rows = []
@@ -1109,7 +1350,7 @@ def scrape_flinders() -> list[dict]:
                 "customer": "",
             })
     except Exception as e:
-        print(f"Warning: Failed to fetch Flinders Ports expected data: {e}")
+        log.warning("Failed to fetch Flinders Ports expected data: %s", e)
 
     # FNT-PUBLIC-IN-PORT = Vessels currently in port
     try:
@@ -1128,6 +1369,9 @@ def scrape_flinders() -> list[dict]:
                 "ARR / DEP": "In Port",
                 "Vessel type": "",
                 "Agent": mapped.get("ADENT", ""),
+                # PortControl in-port reports name the origin field "TO_LOCATION"
+                # (the port the vessel sailed TO before arriving here). This is a
+                # naming quirk, not a bug — confirmed identical in Darwin scraper.
                 "From": mapped.get("TO_LOCATION", ""),
                 "To": "",
                 "In port": mapped.get("BERTH", ""),
@@ -1137,7 +1381,7 @@ def scrape_flinders() -> list[dict]:
                 "customer": "",
             })
     except Exception as e:
-        print(f"Warning: Failed to fetch Flinders Ports in-port data: {e}")
+        log.warning("Failed to fetch Flinders Ports in-port data: %s", e)
 
     return rows
 
@@ -1150,12 +1394,13 @@ DARWIN_BASE = "https://portinfo.darwinport.com.au/webx"
 _DARWIN_JOB_MAP = {"ARR": "Arrival", "DEP": "Departure", "EXT": "External"}
 
 
+@_retry()
 def scrape_darwin() -> list[dict]:
     """Scrape NT port movements from Darwin Port PortControl API."""
     try:
         client, stamp = _portcontrol_get_session(DARWIN_BASE, "audrw.public/main-view")
     except Exception as e:
-        print(f"Warning: Failed to get Darwin Port session: {e}")
+        log.warning("Failed to get Darwin Port session: %s", e)
         return []
 
     rows = []
@@ -1188,7 +1433,7 @@ def scrape_darwin() -> list[dict]:
                 "customer": "",
             })
     except Exception as e:
-        print(f"Warning: Failed to fetch Darwin Port schedule data: {e}")
+        log.warning("Failed to fetch Darwin Port schedule data: %s", e)
 
     # AUDRW-WEB-0003 = Vessels currently in port
     try:
@@ -1207,6 +1452,9 @@ def scrape_darwin() -> list[dict]:
                 "ARR / DEP": "In Port",
                 "Vessel type": "",
                 "Agent": mapped.get("AGENT", ""),
+                # PortControl in-port reports name the origin field "TO_LOCATION"
+                # (the port the vessel sailed TO before arriving here). Same quirk
+                # as Flinders — see comment there.
                 "From": mapped.get("TO_LOCATION", ""),
                 "To": "",
                 "In port": mapped.get("BERTH", ""),
@@ -1216,7 +1464,7 @@ def scrape_darwin() -> list[dict]:
                 "customer": "",
             })
     except Exception as e:
-        print(f"Warning: Failed to fetch Darwin Port in-port data: {e}")
+        log.warning("Failed to fetch Darwin Port in-port data: %s", e)
 
     return rows
 
@@ -1227,6 +1475,7 @@ def scrape_darwin() -> list[dict]:
 TASPORTS_BASE = "https://tasports.com.au/actions/site-module/shipping/get-json-data"
 
 
+@_retry()
 def scrape_tasports() -> list[dict]:
     """Scrape TAS port movements from TasPorts JSON API."""
     rows = []
@@ -1304,7 +1553,7 @@ def scrape_tasports() -> list[dict]:
             })
 
     except Exception as e:
-        print(f"Warning: Failed to fetch TasPorts data: {e}")
+        log.warning("Failed to fetch TasPorts data: %s", e)
 
     return rows
 
@@ -1365,7 +1614,7 @@ def _normalise_rows(raw_rows: list[dict]) -> list[dict]:
 
         for key in ["Vessel", "Ship", "Name"]:
             if key in row:
-                n["vessel"] = row[key]
+                n["vessel"] = (row[key] or "").strip().upper()
                 break
         else:
             n["vessel"] = ""
@@ -1416,6 +1665,21 @@ def _normalise_rows(raw_rows: list[dict]) -> list[dict]:
         )
 
         normalised.append(n)
+
+    # Log data quality summary
+    if normalised:
+        total = len(normalised)
+        tankers = sum(1 for r in normalised if r.get("is_tanker"))
+        empty_dates = sum(1 for r in normalised if not r.get("date_time"))
+        unknown_origins = sum(
+            1 for r in normalised
+            if r.get("origin_country") == "Unknown" and r.get("is_tanker")
+        )
+        log.info(
+            "Normalised %d rows: %d tankers, %d empty dates, %d tankers with unknown origin",
+            total, tankers, empty_dates, unknown_origins,
+        )
+
     return normalised
 
 
@@ -1481,17 +1745,72 @@ def scrape_all_ports(tankers_only: bool = False) -> pl.DataFrame:
     port_status: dict[str, dict] = {}
     any_succeeded = False
 
-    for label, fn in _SCRAPERS:
+    def _run_scraper(label_fn: tuple[str, callable]) -> tuple[str, list[dict] | None, str, int]:
+        """Run a single scraper, returning (label, rows|None, error, duration_ms)."""
+        label, fn = label_fn
+        t0 = time.monotonic()
         try:
             rows = fn()
-            all_raw.extend(rows)
-            port_status[label] = {"ok": True, "count": len(rows)}
-            any_succeeded = True
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return label, rows, "", elapsed_ms
         except Exception as exc:
-            port_status[label] = {"ok": False, "error": str(exc)[:200]}
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return label, None, str(exc)[:200], elapsed_ms
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_run_scraper, pair): pair[0] for pair in _SCRAPERS}
+        for future in as_completed(futures):
+            label, rows, error, elapsed_ms = future.result()
+            if rows is not None:
+                if not rows:
+                    log.warning("%s scraper returned 0 rows (possible empty page or changed layout)", label)
+                all_raw.extend(rows)
+                tanker_count = sum(
+                    1 for r in rows
+                    if _is_tanker(
+                        r.get("Vessel type", r.get("vessel_type", "")),
+                        r.get("cargo_type", ""),
+                        r.get("Vessel", ""),
+                    )
+                )
+                port_status[label] = {
+                    "ok": True,
+                    "count": len(rows),
+                    "tanker_count": tanker_count,
+                    "duration_ms": elapsed_ms,
+                }
+                any_succeeded = True
+            else:
+                log.warning("%s scraper failed: %s", label, error)
+                port_status[label] = {
+                    "ok": False,
+                    "error": error,
+                    "duration_ms": elapsed_ms,
+                }
 
     if any_succeeded:
         normalised = _normalise_rows(all_raw)
+
+        # Deduplicate: Geelong vessels appear from both scrape_geelong() and
+        # scrape_ports_victoria(). Keep the record with richer data (tonnage/length).
+        seen: dict[tuple, int] = {}  # (vessel, port) → index into normalised
+        deduped: list[dict] = []
+        for row in normalised:
+            key = (row.get("vessel", "").upper(), row.get("port", "").lower())
+            if key in seen:
+                # Replace if the new record has tonnage and the old one doesn't
+                old_idx = seen[key]
+                old_has_tonnage = deduped[old_idx].get("tonnage") is not None
+                new_has_tonnage = row.get("tonnage") is not None
+                if new_has_tonnage and not old_has_tonnage:
+                    deduped[old_idx] = row
+            else:
+                seen[key] = len(deduped)
+                deduped.append(row)
+        if len(deduped) < len(normalised):
+            log.info("Dedup: removed %d duplicate vessel rows", len(normalised) - len(deduped))
+        normalised = deduped
+
         df = pl.DataFrame(normalised, infer_schema_length=None) if normalised else _empty_df()
 
         # Save full (unfiltered) data + per-port status to disk
@@ -1538,11 +1857,24 @@ def get_port_scrape_status() -> dict[str, dict] | None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     print("Scraping all port vessel movements...")
     df = scrape_all_ports()
     print(f"Total vessels: {len(df)}")
     print(f"States covered: {df['state'].unique().sort().to_list()}")
     print(f"Ports covered: {df['port'].unique().sort().to_list()}")
+
+    # Show per-port health
+    status = get_port_scrape_status()
+    if status:
+        print("\nPer-port scrape status:")
+        for label, info in status.items():
+            if info.get("ok"):
+                print(f"  {label:12s}  OK  {info['count']:4d} rows  "
+                      f"({info.get('tanker_count', '?')} tankers)  "
+                      f"{info.get('duration_ms', '?')}ms")
+            else:
+                print(f"  {label:12s}  FAIL  {info.get('error', '')[:80]}")
 
     tankers = df.filter(pl.col("is_tanker"))
     print(f"\nTankers/fuel vessels: {len(tankers)}")
