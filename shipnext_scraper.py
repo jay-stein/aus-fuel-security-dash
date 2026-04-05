@@ -105,15 +105,14 @@ def fetch_shipnext_position(imo: str, vessel_name: str = "", retries: int = 2) -
                     lon, lat = coords
                     pos = (lat, lon)
 
-                    # Capture AIS observation timestamp if available.
-                    # ShipNext may return updatedAt at the vessel or location level.
+                    # Capture AIS observation timestamp.
+                    # ShipNext API returns location.lastPosUpdatedAt = when the vessel's
+                    # AIS transponder was last received (matches the website's
+                    # "Last Position update" field).
                     ais_updated_at = (
-                        vessel_data.get("updatedAt")
-                        or vessel_data.get("updated_at")
-                        or vessel_data.get("timestamp")
-                        or location.get("updatedAt")
-                        or location.get("updated_at")
+                        location.get("lastPosUpdatedAt")
                         or location.get("timestamp")
+                        or vessel_data.get("hasKnownLocationSince")
                     )
 
                     # Update cache

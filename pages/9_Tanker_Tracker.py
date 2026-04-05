@@ -448,21 +448,29 @@ if filtered:
             hover_lines.append(f"Coords: {v['lat']:.4f}°, {v['lon']:.4f}°")
 
         if v.get("pos_source") == "shipnext":
-            # Show AIS observation time if available, else fall back to our fetch time
+            now_utc = datetime.now(timezone.utc)
             ais_ts = v.get("shipnext_ais_updated_at")
             fetch_ts = v.get("shipnext_cached_at")
             if ais_ts:
                 try:
                     dt = datetime.fromisoformat(str(ais_ts).replace("Z", "+00:00"))
-                    hover_lines.append(f"AIS updated: {dt.strftime('%Y-%m-%d %H:%M UTC')}")
+                    age_h = (now_utc - dt).total_seconds() / 3600
+                    age_str = f"{age_h:.1f}h ago" if age_h >= 1 else f"{age_h * 60:.0f}m ago"
+                    hover_lines.append(
+                        f"AIS position: {dt.strftime('%Y-%m-%d %H:%M UTC')} ({age_str})"
+                    )
                 except Exception:
-                    hover_lines.append(f"AIS updated: {ais_ts}")
-            elif fetch_ts:
+                    hover_lines.append(f"AIS position: {ais_ts}")
+            if fetch_ts:
                 try:
                     dt = datetime.fromisoformat(str(fetch_ts).replace("Z", "+00:00"))
-                    hover_lines.append(f"Fetched from ShipNext: {dt.strftime('%Y-%m-%d %H:%M UTC')}")
+                    age_h = (now_utc - dt).total_seconds() / 3600
+                    age_str = f"{age_h:.1f}h ago" if age_h >= 1 else f"{age_h * 60:.0f}m ago"
+                    hover_lines.append(
+                        f"ShipNext fetched: {dt.strftime('%Y-%m-%d %H:%M UTC')} ({age_str})"
+                    )
                 except Exception:
-                    hover_lines.append(f"Fetched from ShipNext: {fetch_ts}")
+                    hover_lines.append(f"ShipNext fetched: {fetch_ts}")
 
         hover_text = "<br>".join(hover_lines)
 

@@ -21,7 +21,8 @@ uv run streamlit run app.py
 | `data_loader.py` | All data fetching and caching — APS workbook, FRED, AIP, MSO Power BI |
 | `dashboard_utils.py` | Shared constants (RAG thresholds, column maps, HHI), helper functions |
 | `port_scraper.py` | Scrapes 7 port authority sites; exports `scrape_all_ports()`, `AU_PORT_COORDS`, `COUNTRY_COORDS` |
-| `vessel_lookup.py` | VesselFinder lookup for vessel specs; caches to `data/vessel_cache.json` |
+| `vessel_lookup.py` | IMO/spec lookup (MyShipTracking → VesselFinder fallback); caches to `data/vessel_cache.json` |
+| `shipnext_scraper.py` | ShipNext API live positions; caches to `data/shipnext_positions.json` (3h TTL) |
 | `ais_tracker.py` | AISStream.io WebSocket snapshot; exports `fetch_ais_snapshot()`, `estimate_position_on_route()` |
 
 ## Pages
@@ -42,7 +43,8 @@ uv run streamlit run app.py
 - `data/australian-petroleum-statistics.xlsx` — download manually from data.gov.au
 - `data/mso_weekly.json` — cached MSO Power BI data (6h TTL); delete to force refresh
 - `data/ais_positions.json` — cached AIS snapshot (5 min TTL)
-- `data/vessel_cache.json` — VesselFinder vessel specs cache
+- `data/vessel_cache.json` — vessel specs cache (IMO, DWT, GT, flag etc.); failures stored with 7-day TTL for auto-retry
+- `data/shipnext_positions.json` — ShipNext live position cache (3h TTL)
 
 ## Secrets
 
@@ -112,6 +114,28 @@ Weekly fuel stocks (diesel/jet/petrol) via public Power BI embed. No auth needed
   - `ais` — live AIS positions (triangle-up markers, full colour)
   - `port_schedule` — port-scraper "In Port" vessels (grey circle)
   - `estimated` — dead-reckoned positions from ETA (light grey open circle, dotted route)
+
+## Vessel Lookup Strategy (`vessel_lookup.py`)
+
+Name → IMO resolution uses a two-source chain with progressive name cleaning:
+
+1. **MyShipTracking** — primary; searches `?name={query}`, extracts `imo-{7digits}` from result hrefs
+2. **VesselFinder search** — fallback; searches `?name={query}`, extracts `/vessels/details/{7digits}` hrefs
+3. **VesselFinder detail page** — spec fetch once IMO is confirmed
+
+**Name cleaning** (`_clean_vessel_name`) tries variants in order:
+- Original name
+- Strip vessel-type prefixes: `MV`, `MT`, `SS`, `M/V`, `M/T` etc.
+- Apostrophe → space, then apostrophe → removed (handles `AL FAT'H`, `ILE D'YEU`)
+- Dot removal (handles `K. ACACIA`, `TAITAR NO. 4` → `TAITAR NO 4`)
+- Hyphen variants: `NORD-AM` → `NORD AM`, `NORDAM`
+- `NO.` abbreviation removal: `TAITAR NO. 4` → `TAITAR 4`
+- Trailing number removal: `GRAND WINNER 6` → `GRAND WINNER`
+- Last word (only if ≥ 5 chars and not purely numeric)
+
+**Failure caching**: failed lookups stored as `{"failed_at": "..."}` with 7-day TTL.
+After expiry the vessel is retried automatically. Old-style `{}` entries (permanent failures)
+are treated as cache misses on next read, triggering immediate retry.
 
 ## External Reference Tools
 
